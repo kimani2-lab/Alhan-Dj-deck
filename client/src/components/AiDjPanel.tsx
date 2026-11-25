@@ -29,7 +29,7 @@ import {
 import type { TrackResult } from "../lib/tracks";
 import TrackArtwork from "./TrackArtwork";
 import type { TasteProfile } from "../utils/tasteProfile";
-import { fetchApi } from "../lib/api";
+import { fetchApi, readApiJson } from "../lib/api";
 
 type DeckSlot = "A" | "B";
 type AiMode = "dj" | "music";
@@ -346,7 +346,10 @@ export default function AiDjPanel({
           }),
         },
       );
-      const data = (await result.json()) as AiDjResponse & { error?: string };
+      const data = await readApiJson<AiDjResponse>(
+        result,
+        "The AI DJ request failed",
+      );
       if (!result.ok) throw new Error(data.error ?? "The AI DJ request failed.");
       if (!data?.action) throw new Error("The AI DJ returned an unexpected response.");
       if (autoPlay && data.action.type !== "play_request") {

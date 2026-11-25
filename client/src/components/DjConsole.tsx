@@ -76,7 +76,7 @@ import {
   type TasteProfile,
 } from "../utils/tasteProfile";
 import { useTasteProfile } from "../hooks/useTasteProfile";
-import { apiUrl, fetchApi } from "../lib/api";
+import { apiUrl, fetchApi, readApiJson } from "../lib/api";
 import PwaInstallButton from "./PwaInstallButton";
 
 const TASTE_PROMPTED_KEY = "alhan-dj:taste-prompted:v1";
@@ -1016,10 +1016,10 @@ export default function DjConsole() {
       } finally {
         window.clearTimeout(timeout);
       }
-      const data = (await response.json()) as {
+      const data = await readApiJson<{
         tracks?: TrackResult[];
         error?: string;
-      };
+      }>(response, "YouTube search failed");
       if (!response.ok) throw new Error(data.error ?? "YouTube search failed.");
       return (data.tracks ?? []).map((track) => normalizeTrack(track));
     },
@@ -1319,10 +1319,10 @@ export default function DjConsole() {
         const response = await fetchApi(
           `/api/search?q=${encodeURIComponent(query)}`,
         );
-        const data = (await response.json()) as {
+        const data = await readApiJson<{
           tracks?: TrackResult[];
           error?: string;
-        };
+        }>(response, "YouTube search failed");
         if (!response.ok) {
           throw new Error(data.error ?? "Could not load ecosystem recommendations.");
         }
