@@ -1,9 +1,10 @@
 const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
 
 export const API_URL = (
-  process.env.NODE_ENV === "production"
-    ? ""
-    : (configuredApiUrl || "http://localhost:5000")
+  configuredApiUrl ||
+  (process.env.NODE_ENV === "production"
+    ? "https://alhan-dj-deck.onrender.com"
+    : "http://localhost:5000")
 ).replace(/\/$/, "");
 
 export function apiUrl(path: string): string {
@@ -28,11 +29,12 @@ export async function readApiJson<T>(
     if (text.includes("DEPLOYMENT_NOT_FOUND")) {
       throw new Error("The live frontend deployment is unavailable.");
     }
-    throw new Error(
-      text.trim()
-        ? `${fallbackMessage} (${response.status}: ${text.trim().slice(0, 180)})`
-        : fallbackMessage,
-    );
+    if (text.includes("<!DOCTYPE html") || text.includes("<html")) {
+      throw new Error(
+        "The live audio server returned a page instead of JSON. Check the NEXT_PUBLIC_API_URL deployment setting.",
+      );
+    }
+    throw new Error(fallbackMessage);
   }
 
   try {
