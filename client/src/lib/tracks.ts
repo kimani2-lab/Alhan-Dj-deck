@@ -5,6 +5,7 @@ export type TrackResult = {
   thumbnail: string | null;
   channelTitle: string;
   ecosystemQuery: string;
+  genreTags?: string[];
 };
 
 const stripTrackQualifiers = (title: string) =>
@@ -35,6 +36,9 @@ export function normalizeTrack(value: Partial<TrackResult> & { id: string; title
       (channelTitle === "YouTube"
         ? `${cleanTitle} similar songs`
         : `${channelTitle} songs`),
+    genreTags: Array.isArray(value.genreTags)
+      ? value.genreTags.filter((tag): tag is string => typeof tag === "string")
+      : undefined,
   };
 }
 

@@ -15,15 +15,27 @@ import {
 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
-import type { Deck, DeckSnapshot, MixerEngine } from "../lib/audio/AudioEngine";
+import {
+  HALL_SIZE_ORDER,
+  HALL_SIZE_PRESETS,
+  type Deck,
+  type DeckSnapshot,
+  type HallSize,
+  type MixerEngine,
+} from "../lib/audio/AudioEngine";
 import { normalizeTrack, type TrackResult } from "../lib/tracks";
 import {
   getEcosystemArtist,
   type EcosystemQueueSnapshot,
 } from "../utils/ecosystemQueue";
 import TrackArtwork from "./TrackArtwork";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+import {
+  GENRES,
+  isGenreBoosted,
+  type GenreId,
+  type TasteProfile,
+} from "../utils/tasteProfile";
+import { apiUrl } from "../lib/api";
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds)) return "0:00";
@@ -200,6 +212,10 @@ export default function MusicPlayerMode({
   onPlayQueuedTrack,
   onDeckChange,
   onToggleLibrary,
+  tasteProfile,
+  genreFilter,
+  onGenreFilterChange,
+  onUpdateTaste,
 }: {
   engine: MixerEngine | null;
   snapshot: DeckSnapshot;
@@ -218,6 +234,10 @@ export default function MusicPlayerMode({
   onPlayQueuedTrack: (track: TrackResult) => Promise<void>;
   onDeckChange: () => void;
   onToggleLibrary: () => void;
+  tasteProfile: TasteProfile | null;
+  genreFilter: GenreId | null;
+  onGenreFilterChange: (genre: GenreId | null) => void;
+  onUpdateTaste: () => void;
 }) {
   const [scrubPosition, setScrubPosition] = useState<number | null>(null);
   const deck = engine?.deckA ?? null;
@@ -258,6 +278,12 @@ export default function MusicPlayerMode({
     onDeckChange();
   };
 
+  const setHallSize = (size: HallSize) => {
+    if (!deck) return;
+    deck.setHallSize(size);
+    onDeckChange();
+  };
+
   const commitSeek = () => {
     if (scrubPosition === null || !deck) return;
     deck.seek(scrubPosition);
@@ -267,33 +293,18 @@ export default function MusicPlayerMode({
 
   return (
     <section className="music-mode concert-mode">
-      <form className="music-search" onSubmit={onSearch}>
-        <div className="music-search-label">
-          <span className="eyebrow">YOUR NEXT LISTEN</span>
-          <b>Find a track</b>
-        </div>
-        <Search size={18} />
-        <input
-          type="search"
-          value={searchQuery}
-          onChange={(event) => onSearchQueryChange(event.target.value)}
-          placeholder="Search title or artist, or paste a YouTube URL"
-          aria-label="Search music"
-        />
-        <button type="submit" disabled={searching} aria-label="Search tracks">
-          {searching ? <LoaderCircle className="spinner" size={18} /> : "SEARCH"}
-        </button>
-      </form>
-
       <div className="music-content">
         <div className="music-main">
           <div className="music-stage">
-            <SpatialVisualizer deck={deck} snapshot={snapshot} />
+            {!currentTrack?.thumbnail && (
+              <SpatialVisualizer deck={deck} snapshot={snapshot} />
+            )}
             {currentTrack && snapshot.thumbnail && (
               <TrackArtwork
                 className="stage-artwork"
                 track={currentTrack}
                 alt={`${snapshot.title} artwork`}
+                loading="eager"
               />
             )}
             <div className="visual-center">
@@ -315,15 +326,15 @@ export default function MusicPlayerMode({
           <div className="spatial-control-strip">
             <div className="spatial-control-title">
               <Radio size={18} />
-              <div><b>8D SPATIAL ENGINE</b><small>REAL-TIME HEADPHONE FIELD</small></div>
+              <div><b>LARGE HALL 8D ENGINE</b><small>HRTF ORBIT + HALL</small></div>
             </div>
             <label className="music-fx-switch">
-              <span>8D FX</span>
+              <span>HALL 8D</span>
               <button
                 type="button"
                 role="switch"
                 aria-checked={snapshot.spatial.enabled}
-                aria-label="Toggle 8D spatial effects"
+                aria-label="Toggle Hall 8D HRTF and reverb"
                 className={snapshot.spatial.enabled ? "enabled" : ""}
                 onClick={() => {
                   if (!deck) return;
@@ -349,12 +360,12 @@ export default function MusicPlayerMode({
               <small>{snapshot.bassBoost ? "ON" : "OFF"}</small>
             </button>
             <label className="music-range">
-              <span>ROTATION SPEED <b>{snapshot.spatial.speed.toFixed(2)} Hz</b></span>
+              <span>ORBIT SPEED <b>{snapshot.spatial.speed.toFixed(2)} Hz</b></span>
               <input
-                aria-label="Rotation speed"
+                aria-label="Orbit speed"
                 type="range"
-                min={0.05}
-                max={0.5}
+                min={0.04}
+                max={0.3}
                 step={0.01}
                 value={snapshot.spatial.speed}
                 onChange={(event) =>
@@ -363,7 +374,7 @@ export default function MusicPlayerMode({
               />
             </label>
             <label className="music-range">
-              <span>SPATIAL WIDTH <b>{Math.round(snapshot.spatial.depth * 100)}%</b></span>
+              <span>SIDE-TO-SIDE WIDTH <b>{Math.round(snapshot.spatial.depth * 100)}%</b></span>
               <input
                 aria-label="Spatial width"
                 type="range"
@@ -376,21 +387,26 @@ export default function MusicPlayerMode({
                 }
               />
             </label>
-            <label className="music-range">
-              <span>ROOM REVERB <b>{Math.round(snapshot.spatial.room * 100)}%</b></span>
-              <input
-                aria-label="Room reverb"
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={snapshot.spatial.room}
-                onChange={(event) =>
-                  setSpatialControl((item, value) => item.setRoom(value), Number(event.target.value))
-                }
-              />
-            </label>
+            <div className="hall-preset-group" role="group" aria-label="Hall size">
+              <span>HALL SIZE <b>{HALL_SIZE_PRESETS[snapshot.spatial.hallSize].label}</b></span>
+              <div>
+                {HALL_SIZE_ORDER.map((size) => (
+                  <button
+                    key={size}
+                    type="button"
+                    className={snapshot.spatial.hallSize === size ? "active" : ""}
+                    aria-pressed={snapshot.spatial.hallSize === size}
+                    onClick={() => setHallSize(size)}
+                  >
+                    {HALL_SIZE_PRESETS[size].label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
+          <p className="spatial-headphone-note">
+            <Headphones size={12} /> Use headphones for binaural HRTF + hall spatialization.
+          </p>
 
           <div className="music-transport">
             <div className="transport-time">
@@ -429,10 +445,64 @@ export default function MusicPlayerMode({
         </div>
 
         <aside className="music-queue">
+          <form className="music-search music-search-compact" onSubmit={onSearch}>
+            <Search size={17} />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => onSearchQueryChange(event.target.value)}
+              placeholder="Search songs..."
+              aria-label="Search music"
+            />
+            <button type="submit" disabled={searching} aria-label="Search tracks">
+              {searching ? <LoaderCircle className="spinner" size={16} /> : <Search size={16} />}
+            </button>
+          </form>
           <div className="queue-heading">
-            <div><span className="eyebrow">ECOSYSTEM MIX</span><h2>UP NEXT <small>{ecosystemQueue.upNextQueue.length}</small></h2></div>
-            <span className="queue-live"><i /> DECK A</span>
+            <div><span className="eyebrow">ECOSYSTEM MIX</span><h2>PLAYLIST · UP NEXT <small>{ecosystemQueue.upNextQueue.length}</small></h2></div>
+            <span className="queue-live"><i /> AUTO-PLAY · DECK A</span>
           </div>
+          {tasteProfile && (
+            <div className="taste-genre-filters" aria-label="Taste genre filters">
+              <button
+                type="button"
+                className={genreFilter === null ? "selected" : ""}
+                aria-pressed={genreFilter === null}
+                onClick={() => onGenreFilterChange(null)}
+              >
+                FOR YOU
+              </button>
+              {tasteProfile.selectedGenres.map((genreId) => {
+                const genre = GENRES.find((item) => item.id === genreId);
+                if (!genre) return null;
+                const boosted = isGenreBoosted(tasteProfile, genreId);
+                return (
+                  <button
+                    type="button"
+                    key={genreId}
+                    className={genreFilter === genreId ? "selected" : ""}
+                    aria-pressed={genreFilter === genreId}
+                    onClick={() =>
+                      onGenreFilterChange(
+                        genreFilter === genreId ? null : genreId,
+                      )
+                    }
+                  >
+                    {genre.label}
+                    {boosted && <small title="Boosted by repeat searches">BOOSTED</small>}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                className="taste-update"
+                onClick={onUpdateTaste}
+                aria-label="Update selected genres"
+              >
+                EDIT
+              </button>
+            </div>
+          )}
           <div className="ecosystem-seed">
             <div>
               <span className="eyebrow">ACTIVE ECOSYSTEM</span>
@@ -462,7 +532,7 @@ export default function MusicPlayerMode({
                       {loadingId === track.id ? <LoaderCircle className="spinner" size={13} /> : <><Play size={12} fill="currentColor" /> PLAY IN 8D</>}
                     </button>
                     <a
-                      href={`${API_URL}/api/download?id=${encodeURIComponent(track.id)}`}
+                      href={apiUrl(`/api/download?id=${encodeURIComponent(track.id)}`)}
                       aria-label={`Download MP3: ${track.title}`}
                     >
                       <Download size={12} /> DOWNLOAD MP3
@@ -501,7 +571,7 @@ export default function MusicPlayerMode({
                     </button>
                     <button type="button" onClick={() => onSeedTrack(track)}>SEED</button>
                     <a
-                      href={`${API_URL}/api/download?id=${encodeURIComponent(track.id)}`}
+                      href={apiUrl(`/api/download?id=${encodeURIComponent(track.id)}`)}
                       aria-label={`Download MP3: ${track.title}`}
                     >
                       <Download size={12} />

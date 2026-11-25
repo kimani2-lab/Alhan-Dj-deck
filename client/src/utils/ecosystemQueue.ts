@@ -1,4 +1,10 @@
 import type { TrackResult } from "../lib/tracks";
+import {
+  genreMatchesTrack,
+  scoreTrackTaste,
+  type GenreId,
+  type TasteProfile,
+} from "./tasteProfile.ts";
 
 export type EcosystemQueueSnapshot = {
   seed: TrackResult | null;
@@ -70,6 +76,7 @@ export function buildEcosystemQueue(
   candidates: TrackResult[],
   playedHistory: Iterable<string> = [],
   limit = 10,
+  tasteProfile: TasteProfile | null = null,
 ): TrackResult[] {
   const played = new Set(playedHistory);
   const seedTitle = songTitle(seed);
@@ -85,7 +92,7 @@ export function buildEcosystemQueue(
     })
     .map((track) => ({
       track,
-      score: scoreCandidate(seed, track),
+      score: scoreCandidate(seed, track) + scoreTrackTaste(track, tasteProfile),
     }))
     .sort(
       (left, right) =>
@@ -103,6 +110,20 @@ export class EcosystemQueueManager {
   private history: TrackResult[] = [];
   private historyIndex = -1;
   private activeId: string | null = null;
+  private tasteProfile: TasteProfile | null = null;
+
+  setTasteProfile(profile: TasteProfile | null): void {
+    this.tasteProfile = profile;
+    if (this.seed) {
+      this.upNextQueue = buildEcosystemQueue(
+        this.seed,
+        this.upNextQueue,
+        this.playedHistory,
+        10,
+        this.tasteProfile,
+      );
+    }
+  }
 
   setSeed(track: TrackResult): void {
     this.seed = track;
@@ -135,14 +156,32 @@ export class EcosystemQueueManager {
       this.seed,
       merged,
       this.playedHistory,
+      10,
+      this.tasteProfile,
     );
   }
 
-  peekNext(): TrackResult | null {
-    return this.upNextQueue.find(
+  enqueue(track: TrackResult): boolean {
+    if (!track.id || track.id === this.activeId) return false;
+    if (this.upNextQueue.some((candidate) => candidate.id === track.id)) {
+      return false;
+    }
+    this.upNextQueue = [...this.upNextQueue, track];
+    return true;
+  }
+
+  peekNext(genreFilter?: GenreId | null): TrackResult | null {
+    const available = this.upNextQueue.filter(
       (track) =>
         track.id !== this.activeId && !this.playedHistory.has(track.id),
-    ) ?? null;
+    );
+    if (genreFilter) {
+      const genreMatch = available.find((track) =>
+        genreMatchesTrack(track, genreFilter),
+      );
+      if (genreMatch) return genreMatch;
+    }
+    return available[0] ?? null;
   }
 
   shouldRefill(): boolean {

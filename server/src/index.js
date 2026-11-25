@@ -1,61 +1,131 @@
 import { spawn } from "node:child_process";
+import { createReadStream } from "node:fs";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import cors from "cors";
 import express from "express";
+import { registerAiDjRoutes } from "./aiDj.js";
 
 const app = express();
-const port = Number(process.env.PORT ?? 4000);
-const allowedOrigins = (process.env.CLIENT_ORIGIN ?? "")
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const port = Number(process.env.PORT ?? 5000);
+const frontendUrl = process.env.FRONTEND_URL?.trim();
+const allowedOrigins = [
+  "http://localhost:3000",
+  ...(frontendUrl ? frontendUrl.split(",").map((origin) => origin.trim()).filter(Boolean) : []),
+];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      const localDevelopmentOrigin =
-        !process.env.CLIENT_ORIGIN &&
-        /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin ?? "");
-      callback(
-        null,
-        !origin || allowedOrigins.includes(origin) || localDevelopmentOrigin,
-      );
+      callback(null, !origin || allowedOrigins.includes(origin));
     },
   }),
 );
 app.use(express.json({ limit: "32kb" }));
 
-function runYtDlp(args, timeoutMs = 30_000) {
+function setStreamCorsHeaders(request, response) {
+  const origin = request.headers.origin;
+  if (!origin || allowedOrigins.includes(origin)) {
+    response.setHeader("Access-Control-Allow-Origin", origin || "*");
+  }
+  response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  response.setHeader("Accept-Ranges", "none");
+}
+
+function spawnYtDlp(args) {
+  const configuredPath = process.env.YT_DLP_PATH?.trim();
+  const candidates = configuredPath
+    ? [{ command: configuredPath, args }]
+    : [
+        { command: "yt-dlp", args },
+        ...(process.platform === "win32"
+          ? [{ command: "py", args: ["-m", "yt_dlp", ...args] }]
+          : [
+              { command: "python3", args: ["-m", "yt_dlp", ...args] },
+              { command: "python", args: ["-m", "yt_dlp", ...args] },
+            ]),
+      ];
+
   return new Promise((resolve, reject) => {
-    const process = spawn("yt-dlp", args, { windowsHide: true });
+    let candidateIndex = 0;
+    const launch = () => {
+      const candidate = candidates[candidateIndex++];
+      const child = spawn(candidate.command, candidate.args, {
+        windowsHide: true,
+      });
+      const handleError = (error) => {
+        if (error.code === "ENOENT" && candidateIndex < candidates.length) {
+          launch();
+          return;
+        }
+        reject(
+          error.code === "ENOENT"
+            ? new Error(
+                "yt-dlp is not installed. Install it with `py -m pip install --upgrade yt-dlp` on Windows, or set YT_DLP_PATH to its executable.",
+              )
+            : error,
+        );
+      };
+      child.once("spawn", () => {
+        child.removeListener("error", handleError);
+        resolve(child);
+      });
+      child.once("error", handleError);
+    };
+    launch();
+  });
+}
+
+function formatYtDlpError(message) {
+  if (/No module named ['"]?yt_dlp|ModuleNotFoundError.*yt_dlp/i.test(message)) {
+    return "yt-dlp is not installed. Install it with `py -m pip install --upgrade yt-dlp` on Windows, or set YT_DLP_PATH to its executable.";
+  }
+  return message;
+}
+
+function runYtDlp(args, timeoutMs = 90_000) {
+  return new Promise((resolve, reject) => {
+    let child;
+    let timedOut = false;
     const stdout = [];
     const stderr = [];
     const timer = setTimeout(() => {
-      process.kill();
+      timedOut = true;
+      child?.kill();
       reject(new Error("yt-dlp request timed out."));
     }, timeoutMs);
 
-    process.stdout.on("data", (chunk) => stdout.push(chunk));
-    process.stderr.on("data", (chunk) => stderr.push(chunk));
-    process.on("error", (error) => {
-      clearTimeout(timer);
-      reject(
-        error.code === "ENOENT"
-          ? new Error("yt-dlp is not installed or is not available on PATH.")
-          : error,
-      );
-    });
-    process.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        reject(
-          new Error(
-            Buffer.concat(stderr).toString("utf8").trim() ||
-              `yt-dlp exited with status ${code}.`,
-          ),
-        );
+    spawnYtDlp(args).then((spawned) => {
+      child = spawned;
+      if (timedOut) {
+        child.kill();
         return;
       }
-      resolve(Buffer.concat(stdout).toString("utf8"));
+      child.stdout.on("data", (chunk) => stdout.push(chunk));
+      child.stderr.on("data", (chunk) => stderr.push(chunk));
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          reject(
+            new Error(
+              formatYtDlpError(
+                Buffer.concat(stderr).toString("utf8").trim() ||
+                  `yt-dlp exited with status ${code}.`,
+              ),
+            ),
+          );
+          return;
+        }
+        resolve(Buffer.concat(stdout).toString("utf8"));
+      });
+    }).catch((error) => {
+      clearTimeout(timer);
+      reject(error);
     });
   });
 }
@@ -183,14 +253,36 @@ app.get("/api/search", async (request, response) => {
       response.status(400).json({ error: "Paste a valid YouTube video URL." });
       return;
     }
-    const result = await runYtDlp([
+    const ytArgs = [
       "--dump-single-json",
       "--no-warnings",
+      "--socket-timeout",
+      "20",
+      "--retries",
+      "2",
       ...(videoId ? [] : ["--flat-playlist"]),
       videoId
         ? `https://www.youtube.com/watch?v=${videoId}`
         : `ytsearch10:${query}`,
-    ]);
+    ];
+    let result;
+    try {
+      result = await runYtDlp(ytArgs);
+    } catch (firstError) {
+      if (!/timed out|status 429|too many requests/i.test(
+        firstError instanceof Error ? firstError.message : "",
+      )) throw firstError;
+      result = await runYtDlp([
+        "--dump-single-json",
+        "--no-warnings",
+        "--socket-timeout",
+        "30",
+        "--extractor-retries",
+        "2",
+        "--flat-playlist",
+        `ytsearch10:${query}`,
+      ], 120_000);
+    }
     const data = JSON.parse(result);
     const entries = Array.isArray(data.entries) ? data.entries : [data];
     const tracks = entries
@@ -205,60 +297,76 @@ app.get("/api/search", async (request, response) => {
 });
 
 function streamYtDlp(response, videoId, args, download = false) {
-  const process = spawn(
-    "yt-dlp",
-    args,
-    { windowsHide: true },
-  );
   let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    process.kill();
-  }, 120_000);
+  let process;
+  let timeout;
   let responseStarted = false;
   let stderr = "";
 
-  process.stderr.on("data", (chunk) => {
-    stderr += chunk.toString("utf8");
+  const onClose = () => {
+    clearTimeout(timeout);
+    if (process && !process.killed) process.kill();
+  };
+  response.on("close", () => {
+    onClose();
   });
-  process.on("error", (error) => {
+
+  spawnYtDlp(args).then((child) => {
+    process = child;
+    if (response.destroyed) {
+      process.kill();
+      return;
+    }
+
+    timeout = setTimeout(() => {
+      timedOut = true;
+      process.kill();
+    }, 120_000);
+
+    process.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    process.on("error", (error) => {
+      clearTimeout(timeout);
+      if (!response.headersSent) {
+        response.status(502).json({
+          error: formatYtDlpError(error.message),
+        });
+      } else {
+        response.destroy(error);
+      }
+    });
+    process.stdout.once("data", () => {
+      responseStarted = true;
+      response.setHeader("Content-Type", download ? "audio/mpeg" : "application/octet-stream");
+      response.setHeader("Cache-Control", "no-store");
+      if (download) {
+        response.setHeader(
+          "Content-Disposition",
+          `attachment; filename="alhan-${videoId}.mp3"`,
+        );
+      }
+    });
+    process.stdout.pipe(response);
+    process.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0 && !responseStarted && !response.headersSent) {
+        response.status(502).json({
+          error: timedOut
+            ? "yt-dlp audio request timed out."
+            : formatYtDlpError(
+                stderr.trim() || `yt-dlp exited with status ${code}.`,
+              ),
+        });
+      }
+    });
+  }).catch((error) => {
     clearTimeout(timeout);
     if (!response.headersSent) {
       response.status(502).json({
-        error:
-          error.code === "ENOENT"
-            ? "yt-dlp is not installed or is not available on PATH."
-            : error.message,
-      });
-    } else {
-      response.destroy(error);
-    }
-  });
-  process.stdout.once("data", () => {
-    responseStarted = true;
-    response.setHeader("Content-Type", download ? "audio/mpeg" : "application/octet-stream");
-    response.setHeader("Cache-Control", "no-store");
-    if (download) {
-      response.setHeader(
-        "Content-Disposition",
-        `attachment; filename="alhan-${videoId}.mp3"`,
-      );
-    }
-  });
-  process.stdout.pipe(response);
-  process.on("close", (code) => {
-    clearTimeout(timeout);
-    if (code !== 0 && !responseStarted && !response.headersSent) {
-      response.status(502).json({
-        error: timedOut
-          ? "yt-dlp audio request timed out."
-          : stderr.trim() || `yt-dlp exited with status ${code}.`,
+        error: error instanceof Error ? error.message : "Could not start yt-dlp.",
       });
     }
-  });
-  response.on("close", () => {
-    clearTimeout(timeout);
-    if (!process.killed) process.kill();
   });
 }
 
@@ -269,6 +377,7 @@ app.get("/api/stream/:videoId", (request, response) => {
     return;
   }
 
+  setStreamCorsHeaders(request, response);
   streamYtDlp(
     response,
     videoId,
@@ -292,25 +401,66 @@ app.get("/api/download", (request, response) => {
     return;
   }
 
-  streamYtDlp(
-    response,
-    videoId,
-    [
-      "--quiet",
-      "--no-warnings",
-      "--no-playlist",
-      "--extract-audio",
-      "--audio-format",
-      "mp3",
-      "--audio-quality",
-      "0",
-      "-o",
-      "-",
-      `https://www.youtube.com/watch?v=${videoId}`,
-    ],
-    true,
-  );
+  setStreamCorsHeaders(request, response);
+  void (async () => {
+    let tempDirectory = "";
+    try {
+      tempDirectory = await mkdtemp(path.join(os.tmpdir(), "alhan-dj-"));
+      const outputTemplate = path.join(tempDirectory, "%(id)s.%(ext)s");
+      const output = await runYtDlp([
+        "--quiet",
+        "--no-warnings",
+        "--no-playlist",
+        "--extract-audio",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        "0",
+        "-o",
+        outputTemplate,
+        `https://www.youtube.com/watch?v=${videoId}`,
+      ], 180_000);
+      void output;
+
+      const files = await readdir(tempDirectory);
+      const mp3File = files.find((file) => file.toLowerCase().endsWith(".mp3"));
+      if (!mp3File) {
+        throw new Error("yt-dlp did not create an MP3 file.");
+      }
+
+      const filePath = path.join(tempDirectory, mp3File);
+      response.setHeader("Content-Type", "audio/mpeg");
+      response.setHeader("Cache-Control", "no-store");
+      response.setHeader(
+        "Content-Disposition",
+        `attachment; filename="alhan-${videoId}.mp3"`,
+      );
+
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        void rm(tempDirectory, { recursive: true, force: true });
+      };
+      response.once("finish", cleanup);
+      response.once("close", cleanup);
+      createReadStream(filePath).pipe(response);
+    } catch (error) {
+      if (tempDirectory) {
+        await rm(tempDirectory, { recursive: true, force: true });
+      }
+      if (!response.headersSent) {
+        response.status(502).json({
+          error: error instanceof Error ? error.message : "Could not create the MP3 download.",
+        });
+      } else {
+        response.destroy(error instanceof Error ? error : new Error("MP3 download failed."));
+      }
+    }
+  })();
 });
+
+registerAiDjRoutes(app);
 
 app.listen(port, () => {
   console.log(`DJ audio API listening on http://localhost:${port}`);

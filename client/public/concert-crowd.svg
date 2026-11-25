@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" fill="none">
+  <defs>
+    <radialGradient id="sky" cx="50%" cy="35%" r="75%">
+      <stop offset="0" stop-color="#123a88"/>
+      <stop offset=".42" stop-color="#091a48"/>
+      <stop offset="1" stop-color="#030612"/>
+    </radialGradient>
+    <linearGradient id="cyanBeam" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#00dfff" stop-opacity=".8"/>
+      <stop offset="1" stop-color="#0576ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="violetBeam" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#c331ff" stop-opacity=".76"/>
+      <stop offset="1" stop-color="#5a23ff" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="blueGlow">
+      <stop stop-color="#137bff" stop-opacity=".65"/>
+      <stop offset="1" stop-color="#137bff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="pinkGlow">
+      <stop stop-color="#b11cff" stop-opacity=".62"/>
+      <stop offset="1" stop-color="#b11cff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="30"/>
+    </filter>
+    <g id="person">
+      <circle cy="-47" r="12"/>
+      <path d="M-10-35 Q0-42 10-35 L18-15 17 4 14 29 11 54H-11L-14 29-17 4-18-15Z"/>
+      <path d="M-15-23Q-22-31-25-49L-30-70Q-32-78-38-75Q-43-73-40-65L-34-39Q-31-15-19-4Z"/>
+      <path d="M15-23Q22-31 25-49L30-70Q32-78 38-75Q43-73 40-65L34-39Q31-15 19-4Z"/>
+    </g>
+    <g id="person-one-hand">
+      <circle cy="-47" r="12"/>
+      <path d="M-10-35Q0-42 10-35L18-15 17 4 14 29 11 54H-11L-14 29-17 4-18-15Z"/>
+      <path d="M-15-23Q-22-31-25-49L-30-70Q-32-78-38-75Q-43-73-40-65L-34-39Q-31-15-19-4Z"/>
+      <path d="M15-23 28-4 34 16 28 20 17 5 10-13Z"/>
+    </g>
+  </defs>
+
+  <path fill="url(#sky)" d="M0 0h1600v900H0z"/>
+  <ellipse cx="800" cy="250" rx="760" ry="350" fill="url(#blueGlow)" filter="url(#softGlow)"/>
+  <ellipse cx="1120" cy="280" rx="520" ry="300" fill="url(#pinkGlow)" filter="url(#softGlow)"/>
+
+  <path fill="url(#cyanBeam)" opacity=".4" d="M285 0h92L620 735H80z"/>
+  <path fill="url(#violetBeam)" opacity=".42" d="M1210 0h100l250 735h-560z"/>
+  <path fill="url(#cyanBeam)" opacity=".3" d="M745 0h52l90 690H640z"/>
+  <path fill="url(#violetBeam)" opacity=".32" d="M925 0h58l-15 690H780z"/>
+
+  <g fill="#b9f4ff">
+    <circle cx="240" cy="82" r="2"/><circle cx="397" cy="147" r="2"/>
+    <circle cx="527" cy="66" r="1.5"/><circle cx="655" cy="191" r="2"/>
+    <circle cx="738" cy="101" r="1.5"/><circle cx="861" cy="152" r="2"/>
+    <circle cx="1017" cy="70" r="1.5"/><circle cx="1169" cy="178" r="2"/>
+    <circle cx="1300" cy="93" r="1.5"/><circle cx="1442" cy="154" r="2"/>
+    <circle cx="321" cy="252" r="1.5"/><circle cx="555" cy="310" r="1.5"/>
+    <circle cx="1080" cy="286" r="1.5"/><circle cx="1378" cy="339" r="2"/>
+  </g>
+  <g fill="#ee7cff" opacity=".9">
+    <circle cx="430" cy="220" r="2"/><circle cx="702" cy="282" r="2"/>
+    <circle cx="943" cy="224" r="2"/><circle cx="1226" cy="258" r="2"/>
+    <circle cx="1500" cy="205" r="1.5"/>
+  </g>
+
+  <path fill="#0a1230" d="M0 480q45-46 91 0 46-74 94 0 51-91 104 0 49-60 97 0 46-94 97 0 57-73 111 0 47-92 98 0 53-68 107 0 50-94 103 0 48-76 99 0 54-104 109 0 51-62 103 0 50-88 100 0 48-58 97 0 53-78 103 0 43-64 87 0v420H0z"/>
+
+  <g fill="#040714">
+    <use href="#person" transform="translate(32 740) scale(1.12)"/>
+    <use href="#person-one-hand" transform="translate(96 700) scale(1.22)"/>
+    <use href="#person" transform="translate(165 750) scale(1.05)"/>
+    <use href="#person-one-hand" transform="translate(235 704) scale(1.31)"/>
+    <use href="#person" transform="translate(310 750) scale(1.15)"/>
+    <use href="#person-one-hand" transform="translate(385 691) scale(1.28)"/>
+    <use href="#person" transform="translate(463 751) scale(1.08)"/>
+    <use href="#person" transform="translate(538 703) scale(1.2)"/>
+    <use href="#person-one-hand" transform="translate(615 745) scale(1.16)"/>
+    <use href="#person" transform="translate(696 698) scale(1.32)"/>
+    <use href="#person-one-hand" transform="translate(778 747) scale(1.13)"/>
+    <use href="#person" transform="translate(860 698) scale(1.25)"/>
+    <use href="#person-one-hand" transform="translate(943 747) scale(1.18)"/>
+    <use href="#person" transform="translate(1024 698) scale(1.33)"/>
+    <use href="#person-one-hand" transform="translate(1105 746) scale(1.1)"/>
+    <use href="#person" transform="translate(1183 700) scale(1.28)"/>
+    <use href="#person-one-hand" transform="translate(1260 750) scale(1.2)"/>
+    <use href="#person" transform="translate(1340 699) scale(1.34)"/>
+    <use href="#person-one-hand" transform="translate(1422 750) scale(1.13)"/>
+    <use href="#person" transform="translate(1500 702) scale(1.26)"/>
+    <use href="#person-one-hand" transform="translate(1574 746) scale(1.17)"/>
+  </g>
+  <path fill="#03050e" d="M0 850q85-39 170 0 78-52 155 0 95-38 187 0 83-51 167 0 81-44 164 0 85-54 170 0 77-41 153 0 92-53 184 0 91-44 180 0 38-20 70-12v62H0z" opacity=".8"/>
+</svg>

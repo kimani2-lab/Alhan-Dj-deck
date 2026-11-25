@@ -8,10 +8,12 @@ export default function TrackArtwork({
   track,
   className,
   alt = "",
+  loading = "lazy",
 }: {
   track: TrackResult;
   className: string;
   alt?: string;
+  loading?: "eager" | "lazy";
 }) {
   const [fallbackIndex, setFallbackIndex] = useState(0);
   const fallbacks = getThumbnailFallbacks(track);
@@ -31,7 +33,7 @@ export default function TrackArtwork({
       className={className}
       src={fallbacks[fallbackIndex]}
       alt={alt}
-      loading="lazy"
+      loading={loading}
       onError={() => setFallbackIndex((index) => index + 1)}
     />
   );

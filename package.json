@@ -11,7 +11,9 @@
     "build": "npm run build --workspace=client",
     "lint": "npm run lint --workspace=client",
     "test": "npm run test --workspace=client",
-    "start": "concurrently -k -n CLIENT,API \"npm run start --workspace=client\" \"npm run start --workspace=server\""
+    "start": "concurrently -k -n CLIENT,API \"npm run start --workspace=client\" \"npm run start --workspace=server\"",
+    "desktop:dev": "npm --prefix desktop run dev",
+    "desktop:build": "npm --prefix desktop run dist"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

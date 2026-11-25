@@ -1,9 +1,18 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Alhan DJ — Dual Deck Audio Studio",
   description: "A browser-based dual-deck DJ mixer with 8D spatial effects.",
+  manifest: "/manifest.json",
+  icons: {
+    icon: "/alhan-icon.svg",
+    apple: "/alhan-icon.svg",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#32d6cb",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

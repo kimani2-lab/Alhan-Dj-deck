@@ -1,3 +1,16 @@
+import {
+  LargeHall8DEngine,
+  type HallSize,
+} from "./LargeHall8DEngine.ts";
+
+export {
+  createHallImpulseResponse,
+  HALL_SIZE_ORDER,
+  HALL_SIZE_PRESETS,
+  type HallPreset,
+  type HallSize,
+} from "./LargeHall8DEngine.ts";
+
 export type DeckId = "A" | "B";
 
 export type DeckSnapshot = {
@@ -20,6 +33,7 @@ export type DeckSnapshot = {
     speed: number;
     depth: number;
     room: number;
+    hallSize: HallSize;
     phase: number;
     pan: number;
   };
@@ -34,6 +48,7 @@ export class Deck {
   readonly id: DeckId;
   readonly output: GainNode;
   readonly analyser: AnalyserNode;
+  readonly padInput: GainNode;
 
   private readonly context: AudioContext;
   private readonly low: BiquadFilterNode;
@@ -41,13 +56,7 @@ export class Deck {
   private readonly high: BiquadFilterNode;
   private readonly bassBoostFilter: BiquadFilterNode;
   private readonly filterNode: BiquadFilterNode;
-  private readonly panner: StereoPannerNode;
-  private readonly delay: DelayNode;
-  private readonly feedback: GainNode;
-  private readonly wet: GainNode;
-  private readonly dry: GainNode;
-  private readonly lfo: OscillatorNode;
-  private readonly lfoDepth: GainNode;
+  private readonly spatialEngine: LargeHall8DEngine;
   private source: AudioBufferSourceNode | null = null;
   private buffer: AudioBuffer | null = null;
   private title = "No track loaded";
@@ -66,22 +75,22 @@ export class Deck {
   private bassBoost = false;
   private eq = { low: 0, mid: 0, high: 0 };
   private spatialEnabled = false;
-  private spatialSpeed = 0.15;
-  private spatialDepth = 0.65;
+  private spatialSpeed = 0.12;
+  private spatialDepth = 0.75;
   private room = 0.44;
-  private lfoPhase = 0;
-  private phaseUpdatedAt = 0;
+  private hallSize: HallSize = "hall";
   private loopEnabled = false;
   private loopStart: number | null = null;
   private loopEnd: number | null = null;
-  private hotCues: Array<number | null> = [null, null, null, null];
+  private hotCues: Array<number | null> = Array(8).fill(null);
 
   constructor(context: AudioContext, id: DeckId) {
     this.context = context;
-    this.phaseUpdatedAt = context.currentTime;
     this.id = id;
     this.output = context.createGain();
     this.analyser = context.createAnalyser();
+    this.padInput = context.createGain();
+    this.padInput.gain.value = 1;
     this.analyser.fftSize = 2048;
     this.analyser.smoothingTimeConstant = 0.82;
 
@@ -104,37 +113,20 @@ export class Deck {
     this.filterNode.type = "lowpass";
     this.filterNode.frequency.value = 22000;
     this.filterNode.Q.value = 0.7;
-    this.panner = context.createStereoPanner();
-    this.delay = context.createDelay(0.5);
-    this.delay.delayTime.value = 0.12;
-    this.feedback = context.createGain();
-    this.feedback.gain.value = 0.18;
-    this.wet = context.createGain();
-    this.wet.gain.value = 0;
-    this.dry = context.createGain();
-    this.dry.gain.value = 1;
-    this.lfo = context.createOscillator();
-    this.lfo.type = "sine";
-    this.lfo.frequency.value = this.spatialSpeed;
-    this.lfoDepth = context.createGain();
-    this.lfoDepth.gain.value = 0;
+    this.spatialEngine = new LargeHall8DEngine(context);
+    this.spatialEngine.setWidth(this.spatialDepth);
+    this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
+    this.spatialEngine.setRoom(this.room);
+    this.spatialEngine.setHallSize(this.hallSize);
 
     this.low.connect(this.mid);
     this.mid.connect(this.high);
     this.high.connect(this.bassBoostFilter);
     this.bassBoostFilter.connect(this.filterNode);
-    this.filterNode.connect(this.panner);
-    this.panner.connect(this.dry);
-    this.dry.connect(this.output);
-    this.panner.connect(this.delay);
-    this.delay.connect(this.wet);
-    this.wet.connect(this.output);
-    this.delay.connect(this.feedback);
-    this.feedback.connect(this.delay);
+    this.padInput.connect(this.low);
+    this.filterNode.connect(this.spatialEngine.input);
+    this.spatialEngine.output.connect(this.output);
     this.output.connect(this.analyser);
-    this.lfo.connect(this.lfoDepth);
-    this.lfoDepth.connect(this.panner.pan);
-    this.lfo.start();
     this.setVolume(this.volume);
   }
 
@@ -169,14 +161,6 @@ export class Deck {
     return 1 + this.tempo / 100;
   }
 
-  private readLfoPhase(now = this.context.currentTime): number {
-    const elapsed = Math.max(0, now - this.phaseUpdatedAt);
-    return (
-      (this.lfoPhase + elapsed * 2 * Math.PI * this.spatialSpeed) %
-      (2 * Math.PI)
-    );
-  }
-
   get audioBuffer(): AudioBuffer | null {
     return this.buffer;
   }
@@ -197,7 +181,7 @@ export class Deck {
     this.loopEnabled = false;
     this.loopStart = null;
     this.loopEnd = null;
-    this.hotCues = [null, null, null, null];
+    this.hotCues = Array(8).fill(null);
   }
 
   play(): void {
@@ -318,6 +302,22 @@ export class Deck {
     if (this.source) this.source.loopEnd = this.loopEnd;
   }
 
+  setBeatLoop(beats: number): boolean {
+    if (!this.buffer || !Number.isFinite(beats) || beats <= 0) return false;
+    const beatDuration = 60 / this.bpm;
+    const start = Math.floor(this.position / beatDuration) * beatDuration;
+    const end = Math.min(start + beats * beatDuration, this.buffer.duration);
+    if (end - start < 0.02) return false;
+    this.loopStart = start;
+    this.loopEnd = end;
+    if (this.source) {
+      this.source.loopStart = start;
+      this.source.loopEnd = end;
+    }
+    this.setLoopEnabled(true);
+    return this.loopEnabled;
+  }
+
   setLoopEnabled(enabled: boolean): void {
     if (
       enabled &&
@@ -379,50 +379,27 @@ export class Deck {
 
   setSpatialEnabled(enabled: boolean): void {
     this.spatialEnabled = enabled;
-    this.lfoDepth.gain.setTargetAtTime(
-      enabled ? this.spatialDepth : 0,
-      this.context.currentTime,
-      0.08,
-    );
-    this.wet.gain.setTargetAtTime(
-      enabled ? this.room * 0.5 : 0,
-      this.context.currentTime,
-      0.08,
-    );
+    this.spatialEngine.setEnabled(enabled);
   }
 
   setSpatialSpeed(hertz: number): void {
-    const now = this.context.currentTime;
-    this.lfoPhase = this.readLfoPhase(now);
-    this.phaseUpdatedAt = now;
-    this.spatialSpeed = clamp(hertz, 0.05, 0.5);
-    this.lfo.frequency.setTargetAtTime(
-      this.spatialSpeed,
-      now,
-      0.03,
-    );
+    this.spatialSpeed = clamp(hertz, 0.04, 0.5);
+    this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
   }
 
   setSpatialDepth(depth: number): void {
     this.spatialDepth = clamp(depth, 0, 1);
-    if (this.spatialEnabled) {
-      this.lfoDepth.gain.setTargetAtTime(
-        this.spatialDepth,
-        this.context.currentTime,
-        0.03,
-      );
-    }
+    this.spatialEngine.setWidth(this.spatialDepth);
   }
 
   setRoom(value: number): void {
     this.room = clamp(value, 0, 1);
-    if (this.spatialEnabled) {
-      this.wet.gain.setTargetAtTime(
-        this.room * 0.5,
-        this.context.currentTime,
-        0.04,
-      );
-    }
+    this.spatialEngine.setRoom(this.room);
+  }
+
+  setHallSize(size: HallSize): void {
+    this.hallSize = size;
+    this.spatialEngine.setHallSize(size);
   }
 
   getSnapshot(): DeckSnapshot {
@@ -446,9 +423,10 @@ export class Deck {
         speed: this.spatialSpeed,
         depth: this.spatialDepth,
         room: this.room,
-        phase: this.readLfoPhase(),
+        hallSize: this.hallSize,
+        phase: this.spatialEngine.phase,
         pan: this.spatialEnabled
-          ? Math.sin(this.readLfoPhase()) * this.spatialDepth
+          ? Math.sin(this.spatialEngine.phase) * this.spatialDepth
           : 0,
       },
       loop: {
@@ -462,19 +440,13 @@ export class Deck {
 
   dispose(): void {
     this.pause();
-    this.lfo.stop();
-    this.lfo.disconnect();
-    this.lfoDepth.disconnect();
     this.low.disconnect();
+    this.padInput.disconnect();
     this.mid.disconnect();
     this.high.disconnect();
     this.bassBoostFilter.disconnect();
     this.filterNode.disconnect();
-    this.panner.disconnect();
-    this.delay.disconnect();
-    this.feedback.disconnect();
-    this.wet.disconnect();
-    this.dry.disconnect();
+    this.spatialEngine.dispose();
     this.output.disconnect();
     this.analyser.disconnect();
   }

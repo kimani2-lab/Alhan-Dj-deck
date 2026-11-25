@@ -81,3 +81,20 @@ test("queue refill appends unique eligible songs and clear removes the seed", ()
   assert.equal(queue.getSnapshot().seed, null);
   assert.equal(queue.getSnapshot().upNextQueue.length, 0);
 });
+
+test("manually enqueues tracks without duplicates or the active track", () => {
+  const faded = track("faded000001", "Faded");
+  const alone = track("alone000001", "Alone");
+  const queue = new EcosystemQueueManager();
+  queue.setSeed(faded);
+  queue.markPlaying(faded);
+
+  assert.equal(queue.enqueue(alone), true);
+  assert.equal(queue.enqueue(alone), false);
+  assert.equal(queue.enqueue(faded), false);
+  assert.deepEqual(
+    queue.getSnapshot().upNextQueue.map(({ id }) => id),
+    ["alone000001"],
+  );
+  assert.equal(queue.peekNext()?.id, "alone000001");
+});

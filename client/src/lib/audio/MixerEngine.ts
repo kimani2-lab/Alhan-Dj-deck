@@ -7,6 +7,7 @@ export class MixerEngine {
   readonly context: AudioContext;
   readonly deckA: Deck;
   readonly deckB: Deck;
+  readonly padBus: GainNode;
 
   private readonly master: GainNode;
   private readonly limiter: DynamicsCompressorNode;
@@ -30,6 +31,7 @@ export class MixerEngine {
     this.limiter.release.value = 0.25;
     this.crossfadeA = this.context.createGain();
     this.crossfadeB = this.context.createGain();
+    this.padBus = this.context.createGain();
     this.deckA = new Deck(this.context, "A");
     this.deckB = new Deck(this.context, "B");
 
@@ -41,6 +43,7 @@ export class MixerEngine {
     this.deckB.analyser.connect(this.crossfadeB);
     this.crossfadeA.connect(this.master);
     this.crossfadeB.connect(this.master);
+    this.padBus.connect(this.master);
     this.master.connect(this.limiter);
     this.limiter.connect(this.context.destination);
     this.setCrossfader(0);
@@ -122,6 +125,7 @@ export class MixerEngine {
     this.deckB.dispose();
     this.crossfadeA.disconnect();
     this.crossfadeB.disconnect();
+    this.padBus.disconnect();
     this.master.disconnect();
     this.limiter.disconnect();
     void this.context.close();
