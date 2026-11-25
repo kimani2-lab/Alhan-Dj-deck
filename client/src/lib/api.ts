@@ -15,7 +15,39 @@ export async function fetchApi(
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
-  return fetch(apiUrl(path), init);
+  let lastReason: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 45_000);
+    const upstreamSignal = init?.signal;
+    const abortUpstream = () => controller.abort();
+    upstreamSignal?.addEventListener("abort", abortUpstream, { once: true });
+
+    try {
+      const response = await fetch(apiUrl(path), {
+        ...init,
+        signal: controller.signal,
+      });
+      return response;
+    } catch (reason) {
+      lastReason = reason;
+      if (attempt < 2) {
+        await new Promise((resolve) => window.setTimeout(resolve, 750 * (attempt + 1)));
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      upstreamSignal?.removeEventListener("abort", abortUpstream);
+    }
+  }
+
+  if (lastReason instanceof DOMException && lastReason.name === "AbortError") {
+    throw new Error(
+      "The audio server is waking up or taking too long. Wait a few seconds and try again.",
+    );
+  }
+  throw new Error(
+    `Could not reach the audio server at ${API_URL}. Check internet access, CORS, and the Render service status.`,
+  );
 }
 
 export async function readApiJson<T>(

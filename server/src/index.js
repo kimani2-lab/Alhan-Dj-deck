@@ -23,7 +23,7 @@ app.use(
   cors({
     origin: (origin, callback) => {
       const vercelPreview =
-        /^https:\/\/[a-z0-9-]+(?:-[a-z0-9]+)*\.vercel\.app$/i.test(origin ?? "");
+        /^https:\/\/[^/]+\.vercel\.app$/i.test(origin ?? "");
       callback(
         null,
         !origin ||
