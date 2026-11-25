@@ -1,4 +1,8 @@
 export { MixerEngine } from "./MixerEngine";
+export {
+  EightDMusicEngine,
+  type EightDMusicSnapshot,
+} from "./EightDMusicEngine";
 export { Deck, type DeckId, type DeckSnapshot } from "./Deck";
 export {
   createHallImpulseResponse,

@@ -1,5 +1,8 @@
+const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+
 export const API_URL = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"
+  configuredApiUrl ||
+  (process.env.NODE_ENV === "production" ? "" : "http://localhost:5000")
 ).replace(/\/$/, "");
 
 export function apiUrl(path: string): string {

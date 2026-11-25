@@ -44,6 +44,8 @@ import {
 import {
   BeatPadEngine,
   Deck,
+  EightDMusicEngine,
+  type EightDMusicSnapshot,
   HALL_SIZE_ORDER,
   HALL_SIZE_PRESETS,
   type DeckId,
@@ -707,6 +709,9 @@ function DeckPanel({
 export default function DjConsole() {
   const engineRef = useRef<MixerEngine | null>(null);
   const [engine, setEngine] = useState<MixerEngine | null>(null);
+  const [eightDEngine, setEightDEngine] = useState<EightDMusicEngine | null>(null);
+  const eightDEngineRef = useRef<EightDMusicEngine | null>(null);
+  const [eightDSnapshot, setEightDSnapshot] = useState<EightDMusicSnapshot | null>(null);
   const [beatPadEngine, setBeatPadEngine] = useState<BeatPadEngine | null>(null);
   const [snapshots, setSnapshots] = useState<Record<DeckId, DeckSnapshot> | null>(null);
   const [queueManager] = useState(() => new EcosystemQueueManager());
@@ -787,6 +792,11 @@ export default function DjConsole() {
   useEffect(() => {
     const mixer = new MixerEngine();
     const pads = new BeatPadEngine(mixer.context, mixer.padBus);
+    const eightD = new EightDMusicEngine(
+      mixer.context,
+      mixer.masterInput,
+    );
+    eightDEngineRef.current = eightD;
     engineRef.current = mixer;
     let isReady = false;
     const update = () => {
@@ -794,6 +804,7 @@ export default function DjConsole() {
         isReady = true;
         setEngine(mixer);
         setBeatPadEngine(pads);
+        setEightDEngine(eightD);
       }
       setSnapshots({
         A: mixer.deckA.getSnapshot(),
@@ -801,10 +812,12 @@ export default function DjConsole() {
       });
       setCrossfader(mixer.getCrossfader());
       setMasterVolume(mixer.getMasterVolume());
+      setEightDSnapshot(eightD.getSnapshot());
     };
     const interval = window.setInterval(update, 100);
     return () => {
       window.clearInterval(interval);
+      eightD.dispose();
       pads.dispose();
       mixer.dispose();
       engineRef.current = null;
@@ -914,6 +927,41 @@ export default function DjConsole() {
       setError(reason instanceof Error ? reason.message : "Could not decode the audio file.");
     }
   };
+
+  const loadEightDMusicTrack = useCallback(
+    async (track: TrackResult): Promise<boolean> => {
+      const eightD = eightDEngineRef.current;
+      if (!eightD) return false;
+      setLoadingId(track.id);
+      setError("");
+      try {
+        await eightD.loadUrl(
+          apiUrl(`/api/stream/${encodeURIComponent(track.id)}`),
+          track.title,
+          {
+            id: track.id,
+            channelTitle: track.channelTitle,
+            thumbnail: track.thumbnail ?? "",
+          },
+        );
+        recordTastePlay(track);
+        eightD.play();
+        setEightDSnapshot(eightD.getSnapshot());
+        setMode("music");
+        return true;
+      } catch (reason) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Could not start this 8D track.",
+        );
+        return false;
+      } finally {
+        setLoadingId(null);
+      }
+    },
+    [recordTastePlay],
+  );
 
   const searchRequestRef = useRef(0);
 
@@ -1301,14 +1349,11 @@ export default function DjConsole() {
   ]);
 
   const playAiStep = useCallback(async (item: AiSetQueueItem): Promise<boolean> => {
-    const mixer = engineRef.current;
-    if (!mixer) return false;
-    if (!(await loadYoutubeTrack("A", item.track))) return false;
-    await mixer.resume();
-    const deck = mixer.deckA;
-    deck.setSpatialEnabled(item.step.enable8d);
-    deck.setBassBoost(item.step.bassBoost);
-    deck.play();
+    const eightD = eightDEngineRef.current;
+    if (!eightD) return false;
+    if (!(await loadEightDMusicTrack(item.track))) return false;
+    eightD.setSpatialEnabled(item.step.enable8d);
+    eightD.setBassBoost(item.step.bassBoost);
     explicitEcosystemSeedRef.current = null;
     autoPlayClearedTrackRef.current = null;
     queueManager.setSeed(item.track);
@@ -1316,11 +1361,11 @@ export default function DjConsole() {
     queueManager.markPlaying(item.track);
     refreshEcosystemQueue();
     void fetchEcosystemCandidates(item.track);
-    refresh();
+    setEightDSnapshot(eightD.getSnapshot());
     return true;
   }, [
     fetchEcosystemCandidates,
-    loadYoutubeTrack,
+    loadEightDMusicTrack,
     queueManager,
     refresh,
     refreshEcosystemQueue,
@@ -1369,12 +1414,10 @@ export default function DjConsole() {
   }, [playAiStep]);
 
   const playEcosystemTrack = useCallback(async (track: TrackResult) => {
-    if (!(await loadYoutubeTrack("A", track))) return false;
-    const mixer = engineRef.current;
-    if (!mixer) return false;
-    const deck = mixer.deckA;
-    deck.setSpatialEnabled(true);
-    deck.play();
+    if (!(await loadEightDMusicTrack(track))) return false;
+    const eightD = eightDEngineRef.current;
+    if (!eightD) return false;
+    eightD.setSpatialEnabled(true);
     queueManager.markPlaying(track);
     refreshEcosystemQueue();
     refresh();
@@ -1847,14 +1890,10 @@ export default function DjConsole() {
                   type="button"
                   className={remainingGenres === 0 ? "alhan-update-taste" : ""}
                   onClick={() => {
-                    if (remainingGenres === 0) {
-                      setSelectingGenres(false);
-                      setGenreShelf(null);
-                      setGenreFilter(null);
-                      setHomeSearchText("");
-                    } else {
-                      setGenreOnboardingOpen(true);
-                    }
+                    setSelectingGenres(false);
+                    setGenreShelf(null);
+                    setGenreFilter(null);
+                    setGenreOnboardingOpen(true);
                   }}
                 >
                   {remainingGenres === 0 ? "Update My Taste" : "Edit taste"}
@@ -1920,46 +1959,6 @@ export default function DjConsole() {
                           <b title={track.title}>{track.title}</b>
                           <small>{track.channelTitle}</small>
                           <div className="alhan-track-card-actions">
-                            <button
-                              type="button"
-                              aria-label={`Play ${track.title} in 8D`}
-                              disabled={loadingId === track.id}
-                              onClick={() => void playTrackIn8D(track)}
-                            >
-                              {loadingId === track.id ? <LoaderCircle className="spinner" size={11} /> : "8D"}
-                            </button>
-                            <button
-                              type="button"
-                              aria-label={`Load ${track.title} to Deck A`}
-                              disabled={loadingId === track.id}
-                              onClick={() => void loadToDeck("A", track)}
-                            >
-                              A
-                            </button>
-                            <button
-                              type="button"
-                              aria-label={`Load ${track.title} to Deck B`}
-                              disabled={loadingId === track.id}
-                              onClick={() => void loadToDeck("B", track)}
-                            >
-                              B
-                            </button>
-                            <button
-                              type="button"
-                              className={queued ? "queued" : ""}
-                              aria-label={
-                                queued
-                                  ? `${track.title} is in the queue`
-                                  : `Add ${track.title} to queue`
-                              }
-                              onClick={() => queueTrack(track)}
-                            >
-                              {queued ? (
-                                <ListChecks size={11} />
-                              ) : (
-                                <ListPlus size={11} />
-                              )}
-                            </button>
                             <a
                               href={apiUrl(`/api/download?id=${encodeURIComponent(track.id)}`)}
                               aria-label={`Download MP3 ${track.title}`}
@@ -2237,7 +2236,9 @@ export default function DjConsole() {
         ) : (
         <MusicPlayerMode
           engine={engine}
-          snapshot={snapshots.A}
+          snapshot={(eightDSnapshot ?? snapshots.A) as DeckSnapshot}
+          eightDEngine={eightDEngine}
+          eightDSnapshot={eightDSnapshot}
           tracks={youtubeTracks}
           searchQuery={youtubeQuery}
           onSearchQueryChange={setYoutubeQuery}

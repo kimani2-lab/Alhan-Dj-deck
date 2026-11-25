@@ -20,6 +20,8 @@ import {
   HALL_SIZE_PRESETS,
   type Deck,
   type DeckSnapshot,
+  type EightDMusicSnapshot,
+  type EightDMusicEngine,
   type HallSize,
   type MixerEngine,
 } from "../lib/audio/AudioEngine";
@@ -197,6 +199,8 @@ function SpatialVisualizer({
 export default function MusicPlayerMode({
   engine,
   snapshot,
+  eightDEngine,
+  eightDSnapshot,
   tracks,
   searchQuery,
   onSearchQueryChange,
@@ -219,6 +223,8 @@ export default function MusicPlayerMode({
 }: {
   engine: MixerEngine | null;
   snapshot: DeckSnapshot;
+  eightDEngine: EightDMusicEngine | null;
+  eightDSnapshot: EightDMusicSnapshot | null;
   tracks: TrackResult[];
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
@@ -240,6 +246,7 @@ export default function MusicPlayerMode({
   onUpdateTaste: () => void;
 }) {
   const [scrubPosition, setScrubPosition] = useState<number | null>(null);
+  const activeSnapshot = eightDSnapshot ?? snapshot;
   const deck = engine?.deckA ?? null;
   const searchResult =
     tracks.find((track) => track.id === snapshot.trackId) ??
@@ -262,31 +269,32 @@ export default function MusicPlayerMode({
   };
 
   const togglePlayback = () => {
-    if (!engine || !deck) return;
-    void engine.resume().then(() => {
-      deck.togglePlayback();
+    if (!eightDEngine) return;
+    void eightDEngine.resume().then(() => {
+      eightDEngine.togglePlayback();
       onDeckChange();
     });
   };
 
   const setSpatialControl = (
-    update: (audioDeck: Deck, value: number) => void,
+    update: "speed" | "depth",
     value: number,
   ) => {
-    if (!deck) return;
-    update(deck, value);
+    if (!eightDEngine) return;
+    if (update === "speed") eightDEngine.setSpatialSpeed(value);
+    else eightDEngine.setSpatialDepth(value);
     onDeckChange();
   };
 
   const setHallSize = (size: HallSize) => {
-    if (!deck) return;
-    deck.setHallSize(size);
+    if (!eightDEngine) return;
+    eightDEngine.setHallSize(size);
     onDeckChange();
   };
 
   const commitSeek = () => {
-    if (scrubPosition === null || !deck) return;
-    deck.seek(scrubPosition);
+    if (scrubPosition === null || !eightDEngine) return;
+    eightDEngine.seek(scrubPosition);
     setScrubPosition(null);
     onDeckChange();
   };
@@ -337,8 +345,8 @@ export default function MusicPlayerMode({
                 aria-label="Toggle Hall 8D HRTF and reverb"
                 className={snapshot.spatial.enabled ? "enabled" : ""}
                 onClick={() => {
-                  if (!deck) return;
-                  deck.setSpatialEnabled(!snapshot.spatial.enabled);
+                  if (!eightDEngine) return;
+                  eightDEngine.setSpatialEnabled(!snapshot.spatial.enabled);
                   onDeckChange();
                 }}
               >
@@ -350,8 +358,8 @@ export default function MusicPlayerMode({
               type="button"
               aria-pressed={snapshot.bassBoost}
               onClick={() => {
-                if (!deck) return;
-                deck.setBassBoost(!snapshot.bassBoost);
+                if (!eightDEngine) return;
+                eightDEngine.setBassBoost(!snapshot.bassBoost);
                 onDeckChange();
               }}
             >
@@ -369,7 +377,7 @@ export default function MusicPlayerMode({
                 step={0.01}
                 value={snapshot.spatial.speed}
                 onChange={(event) =>
-                  setSpatialControl((item, value) => item.setSpatialSpeed(value), Number(event.target.value))
+                  setSpatialControl("speed", Number(event.target.value))
                 }
               />
             </label>
@@ -383,7 +391,7 @@ export default function MusicPlayerMode({
                 step={0.01}
                 value={snapshot.spatial.depth}
                 onChange={(event) =>
-                  setSpatialControl((item, value) => item.setSpatialDepth(value), Number(event.target.value))
+                  setSpatialControl("depth", Number(event.target.value))
                 }
               />
             </label>
@@ -460,7 +468,7 @@ export default function MusicPlayerMode({
           </form>
           <div className="queue-heading">
             <div><span className="eyebrow">ECOSYSTEM MIX</span><h2>PLAYLIST · UP NEXT <small>{ecosystemQueue.upNextQueue.length}</small></h2></div>
-            <span className="queue-live"><i /> AUTO-PLAY · DECK A</span>
+            <span className="queue-live"><i /> AUTO-PLAY · 8D MUSIC</span>
           </div>
           {tasteProfile && (
             <div className="taste-genre-filters" aria-label="Taste genre filters">

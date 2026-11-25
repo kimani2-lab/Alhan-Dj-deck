@@ -8,6 +8,7 @@ export class MixerEngine {
   readonly deckA: Deck;
   readonly deckB: Deck;
   readonly padBus: GainNode;
+  readonly masterInput: GainNode;
 
   private readonly master: GainNode;
   private readonly limiter: DynamicsCompressorNode;
@@ -23,6 +24,7 @@ export class MixerEngine {
         latencyHint: "interactive",
       });
     this.master = this.context.createGain();
+    this.masterInput = this.master;
     this.limiter = this.context.createDynamicsCompressor();
     this.limiter.threshold.value = -6;
     this.limiter.knee.value = 8;

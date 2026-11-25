@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node --check src/index.js && node --check src/aiDj.js",
     "dev": "node --watch src/index.js",
     "start": "node src/index.js"
   },

@@ -12,6 +12,8 @@ const port = Number(process.env.PORT ?? 5000);
 const frontendUrl = process.env.FRONTEND_URL?.trim();
 const allowedOrigins = [
   "http://localhost:3000",
+  "https://alhan-dj-deck.vercel.app",
+  "https://alhan-dj.vercel.app",
   ...(frontendUrl ? frontendUrl.split(",").map((origin) => origin.trim()).filter(Boolean) : []),
 ];
 
