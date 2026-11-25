@@ -22,7 +22,14 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      callback(null, !origin || allowedOrigins.includes(origin));
+      const vercelPreview =
+        /^https:\/\/[a-z0-9-]+(?:-[a-z0-9]+)*\.vercel\.app$/i.test(origin ?? "");
+      callback(
+        null,
+        !origin ||
+          allowedOrigins.includes(origin) ||
+          vercelPreview,
+      );
     },
   }),
 );
