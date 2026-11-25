@@ -3,7 +3,7 @@ const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
 export const API_URL = (
   configuredApiUrl ||
   (process.env.NODE_ENV === "production"
-    ? "https://alhan-dj-deck.onrender.com"
+    ? "https://alhan-dj-deck-1.onrender.com"
     : "http://localhost:5000")
 ).replace(/\/$/, "");
 

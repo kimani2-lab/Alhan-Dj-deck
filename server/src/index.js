@@ -14,6 +14,7 @@ const allowedOrigins = [
   "http://localhost:3000",
   "https://alhan-dj-deck.vercel.app",
   "https://alhan-dj.vercel.app",
+  "https://alhan-dj-deck-kimani2-labs-projects.vercel.app",
   "https://alhan-8d-music.co.ke",
   "https://www.alhan-8d-music.co.ke",
   ...(frontendUrl ? frontendUrl.split(",").map((origin) => origin.trim()).filter(Boolean) : []),
