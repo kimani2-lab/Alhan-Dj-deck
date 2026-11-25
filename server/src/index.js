@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile, chmod, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import cors from "cors";
@@ -14,6 +14,8 @@ const allowedOrigins = [
   "http://localhost:3000",
   "https://alhan-dj-deck.vercel.app",
   "https://alhan-dj.vercel.app",
+  "https://alhan-8d-music.co.ke",
+  "https://www.alhan-8d-music.co.ke",
   ...(frontendUrl ? frontendUrl.split(",").map((origin) => origin.trim()).filter(Boolean) : []),
 ];
 
@@ -25,6 +27,32 @@ app.use(
   }),
 );
 app.use(express.json({ limit: "32kb" }));
+
+async function ensureYtDlp() {
+  if (process.env.YT_DLP_PATH?.trim()) return;
+  const executable = path.join(os.tmpdir(), process.platform === "win32" ? "alhan-yt-dlp.exe" : "alhan-yt-dlp");
+  try {
+    const metadata = await stat(executable);
+    if (metadata.isFile() && metadata.size > 100_000) {
+      process.env.YT_DLP_PATH = executable;
+      return;
+    }
+  } catch {
+    // Download below.
+  }
+
+  const response = await fetch(
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+  );
+  if (!response.ok) {
+    throw new Error(`Could not download yt-dlp (${response.status}).`);
+  }
+  const bytes = await response.arrayBuffer();
+  await writeFile(executable, Buffer.from(bytes), { mode: 0o755 });
+  await chmod(executable, 0o755);
+  process.env.YT_DLP_PATH = executable;
+  console.log("Downloaded yt-dlp runtime.");
+}
 
 function setStreamCorsHeaders(request, response) {
   const origin = request.headers.origin;
@@ -464,6 +492,14 @@ app.get("/api/download", (request, response) => {
 
 registerAiDjRoutes(app);
 
-app.listen(port, () => {
-  console.log(`DJ audio API listening on http://localhost:${port}`);
-});
+void ensureYtDlp()
+  .catch((error) => {
+    console.error(
+      error instanceof Error ? error.message : "yt-dlp bootstrap failed.",
+    );
+  })
+  .finally(() => {
+    app.listen(port, () => {
+      console.log(`DJ audio API listening on http://localhost:${port}`);
+    });
+  });
