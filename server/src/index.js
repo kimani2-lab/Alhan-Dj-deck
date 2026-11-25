@@ -303,10 +303,21 @@ app.get("/api/status", async (_request, response) => {
   }
 });
 
+const searchCache = new Map();
+const SEARCH_CACHE_TTL_MS = 30 * 60 * 1000;
+
 app.get("/api/search", async (request, response) => {
   const query = String(request.query.q ?? "").trim();
   if (!query || query.length > 200) {
     response.status(400).json({ error: "Enter a search query (up to 200 characters)." });
+    return;
+  }
+
+  const cacheKey = query.toLowerCase();
+  const cached = searchCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < SEARCH_CACHE_TTL_MS) {
+    response.setHeader("Cache-Control", "public, max-age=300");
+    response.json(cached.value);
     return;
   }
 
@@ -352,7 +363,14 @@ app.get("/api/search", async (request, response) => {
     const tracks = entries
       .filter((entry) => entry.id && entry.title)
       .map(normalizeTrack);
-    response.json({ tracks });
+    const value = { tracks };
+    searchCache.set(cacheKey, { createdAt: Date.now(), value });
+    if (searchCache.size > 200) {
+      const oldestKey = searchCache.keys().next().value;
+      if (oldestKey) searchCache.delete(oldestKey);
+    }
+    response.setHeader("Cache-Control", "public, max-age=300");
+    response.json(value);
   } catch (error) {
     response.status(502).json({
       error: error instanceof Error ? error.message : "YouTube search failed.",

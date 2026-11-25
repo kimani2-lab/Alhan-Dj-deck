@@ -993,35 +993,47 @@ export default function DjConsole() {
   );
 
   const searchRequestRef = useRef(0);
+  const trackSearchCacheRef = useRef(new Map<string, Promise<TrackResult[]>>());
 
   const fetchTracks = useCallback(
     async (query: string): Promise<TrackResult[]> => {
+      const cacheKey = query.trim().toLowerCase();
+      const cached = trackSearchCacheRef.current.get(cacheKey);
+      if (cached) return cached;
+
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 125_000);
-      let response: Response;
-      try {
-        response = await fetchApi(
-          `/api/search?q=${encodeURIComponent(query)}`,
-          { signal: controller.signal },
-        );
-      } catch (reason) {
-        if (reason instanceof DOMException && reason.name === "AbortError") {
-          throw new Error(
-            "YouTube search is taking longer than expected. Check yt-dlp, internet access, or try again.",
+      const request = (async () => {
+        let response: Response;
+        try {
+          response = await fetchApi(
+            `/api/search?q=${encodeURIComponent(query)}`,
+            { signal: controller.signal },
           );
+        } catch (reason) {
+          if (reason instanceof DOMException && reason.name === "AbortError") {
+            throw new Error(
+              "YouTube search is taking longer than expected. Check yt-dlp, internet access, or try again.",
+            );
+          }
+          throw reason instanceof Error
+            ? reason
+            : new Error("Could not reach the YouTube search server.");
         }
-        throw reason instanceof Error
-          ? reason
-          : new Error("Could not reach the YouTube search server.");
-      } finally {
         window.clearTimeout(timeout);
-      }
-      const data = await readApiJson<{
-        tracks?: TrackResult[];
-        error?: string;
-      }>(response, "YouTube search failed");
-      if (!response.ok) throw new Error(data.error ?? "YouTube search failed.");
-      return (data.tracks ?? []).map((track) => normalizeTrack(track));
+        const data = await readApiJson<{
+          tracks?: TrackResult[];
+          error?: string;
+        }>(response, "YouTube search failed");
+        if (!response.ok) throw new Error(data.error ?? "YouTube search failed.");
+        return (data.tracks ?? []).map((track) => normalizeTrack(track));
+      })();
+
+      trackSearchCacheRef.current.set(cacheKey, request);
+      void request.catch(() => {
+        trackSearchCacheRef.current.delete(cacheKey);
+      });
+      return request;
     },
     [],
   );
@@ -1030,13 +1042,10 @@ export default function DjConsole() {
     let cancelled = false;
 
     const loadGenrePreviews = async () => {
-      await Promise.all(
-        GENRES.map(async (genre, index) => {
-          await new Promise((resolve) =>
-            window.setTimeout(resolve, (index % 6) * 220),
-          );
-          if (cancelled) return;
-          try {
+      for (const genre of GENRES) {
+        if (cancelled) break;
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
+        try {
             const artistSeed =
               genre.aliases.find((alias) =>
                 /[a-z]/i.test(alias) &&
@@ -1051,11 +1060,10 @@ export default function DjConsole() {
                 [genre.id]: tracks[0],
               }));
             }
-          } catch {
-            // Genre cards retain their Lucide icon when a preview search fails.
-          }
-        }),
-      );
+        } catch {
+          // Genre cards retain their Lucide icon when a preview search fails.
+        }
+      }
     };
 
     void loadGenrePreviews();
