@@ -2,6 +2,7 @@
 
 import {
   Download,
+  FolderOpen,
   AudioLines,
   Headphones,
   LoaderCircle,
@@ -469,6 +470,14 @@ export default function MusicPlayerMode({
           <div className="queue-heading">
             <div><span className="eyebrow">ECOSYSTEM MIX</span><h2>PLAYLIST · UP NEXT <small>{ecosystemQueue.upNextQueue.length}</small></h2></div>
             <span className="queue-live"><i /> AUTO-PLAY · 8D MUSIC</span>
+            <button
+              type="button"
+              className="browser-toggle music-library-toggle"
+              onClick={onToggleLibrary}
+              aria-label="Open music library"
+            >
+              <FolderOpen size={14} /> LIBRARY
+            </button>
           </div>
           {tasteProfile && (
             <div className="taste-genre-filters" aria-label="Taste genre filters">

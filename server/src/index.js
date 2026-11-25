@@ -30,6 +30,7 @@ app.use(express.json({ limit: "32kb" }));
 
 async function ensureYtDlp() {
   if (process.env.YT_DLP_PATH?.trim()) return;
+  if (process.platform === "win32") return;
   const executable = path.join(os.tmpdir(), process.platform === "win32" ? "alhan-yt-dlp.exe" : "alhan-yt-dlp");
   try {
     const metadata = await stat(executable);
@@ -79,13 +80,25 @@ function spawnYtDlp(args) {
 
   return new Promise((resolve, reject) => {
     let candidateIndex = 0;
+    let lastError;
     const launch = () => {
       const candidate = candidates[candidateIndex++];
+      if (!candidate) {
+        reject(
+          lastError instanceof Error
+            ? lastError
+            : new Error(
+                "yt-dlp is not installed. Install it with `py -m pip install --upgrade yt-dlp` on Windows.",
+              ),
+        );
+        return;
+      }
       const child = spawn(candidate.command, candidate.args, {
         windowsHide: true,
       });
       const handleError = (error) => {
-        if (error.code === "ENOENT" && candidateIndex < candidates.length) {
+        lastError = error;
+        if (candidateIndex < candidates.length) {
           launch();
           return;
         }
@@ -267,6 +280,19 @@ function normalizeTrack(entry) {
 
 app.get("/api/health", (_request, response) => {
   response.json({ status: "ok" });
+});
+
+app.get("/api/status", async (_request, response) => {
+  try {
+    await runYtDlp(["--version"], 10_000);
+    response.json({ status: "ok", ytDlp: "available" });
+  } catch (error) {
+    response.status(503).json({
+      status: "degraded",
+      ytDlp: "unavailable",
+      error: error instanceof Error ? error.message : "yt-dlp unavailable",
+    });
+  }
 });
 
 app.get("/api/search", async (request, response) => {

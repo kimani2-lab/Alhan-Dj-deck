@@ -713,7 +713,36 @@ export default function DjConsole() {
   const eightDEngineRef = useRef<EightDMusicEngine | null>(null);
   const [eightDSnapshot, setEightDSnapshot] = useState<EightDMusicSnapshot | null>(null);
   const [beatPadEngine, setBeatPadEngine] = useState<BeatPadEngine | null>(null);
-  const [snapshots, setSnapshots] = useState<Record<DeckId, DeckSnapshot> | null>(null);
+  const [snapshots, setSnapshots] = useState<Record<DeckId, DeckSnapshot>>(() => {
+    const createPreviewSnapshot = (id: DeckId): DeckSnapshot => ({
+      id,
+      title: "No track loaded",
+      trackId: null,
+      channelTitle: null,
+      thumbnail: null,
+      duration: 0,
+      position: 0,
+      isPlaying: false,
+      tempo: 0,
+      bpm: 120,
+      volume: 0.82,
+      eq: { low: 0, mid: 0, high: 0 },
+      filter: 0,
+      bassBoost: false,
+      spatial: {
+        enabled: true,
+        speed: 0.12,
+        depth: 0.75,
+        room: 0.44,
+        hallSize: "hall",
+        phase: 0,
+        pan: 0,
+      },
+      loop: { enabled: false, start: null, end: null },
+      hotCues: Array(8).fill(null),
+    });
+    return { A: createPreviewSnapshot("A"), B: createPreviewSnapshot("B") };
+  });
   const [queueManager] = useState(() => new EcosystemQueueManager());
   const [ecosystemQueue, setEcosystemQueue] = useState(() =>
     queueManager.getSnapshot(),
@@ -752,7 +781,7 @@ export default function DjConsole() {
   >({});
   const [error, setError] = useState("");
   const [backendStatus, setBackendStatus] = useState<"checking" | "warming" | "ready" | "offline">("checking");
-  const [aiOpen, setAiOpen] = useState(true);
+  const [aiOpen, setAiOpen] = useState(false);
   const [botActivated, setBotActivated] = useState(false);
   const [aiQueue, setAiQueue] = useState<AiSetQueueItem[]>([]);
   const [aiQueueIndex, setAiQueueIndex] = useState(-1);
@@ -1614,10 +1643,6 @@ export default function DjConsole() {
     MINIMUM_SELECTED_GENRES - selectedCount,
   );
 
-  if (!snapshots) {
-    return <main className="boot-screen"><AudioLines size={24} /> Starting audio engine…</main>;
-  }
-
   return (
     <main className={`app-shell ${mode === "home" ? "home-mode" : ""} ${browserOpen ? "browser-expanded" : ""} ${aiOpen ? "ai-panel-open" : ""}`}>
       <aside className="nav-rail" aria-label="Main navigation">
@@ -1685,40 +1710,10 @@ export default function DjConsole() {
       <div className="console-shell">
       <header className="topbar">
         <div className="topbar-center">
-          <span className="live-indicator"><i /> AUDIO ENGINE READY</span>
-          <span className="topbar-divider" />
-          <span className="headphone-status"><Headphones size={14} /> MASTER OUT</span>
-          <span className={`backend-status backend-${backendStatus}`} title="Audio API status">
-            API {backendStatus === "ready" ? "READY" : backendStatus === "warming" ? "WAKING" : backendStatus === "offline" ? "OFFLINE" : "CHECKING"}
-          </span>
+          <span />
         </div>
         <div className="topbar-actions">
           <PwaInstallButton />
-          <button
-            type="button"
-            className={`browser-toggle beatpad-toggle ${beatPadOpen ? "selected" : ""}`}
-            onClick={() => setBeatPadOpen((open) => !open)}
-            aria-pressed={beatPadOpen}
-            aria-expanded={beatPadOpen}
-            aria-controls="beatpad-panel"
-          >
-            <Gamepad2 size={16} />
-            PADS
-          </button>
-          <button
-            type="button"
-            className={`browser-toggle ai-toggle ${aiOpen ? "selected" : ""}`}
-            onClick={() => setAiOpen((open) => !open)}
-            aria-pressed={aiOpen}
-          >
-            <Sparkles size={16} />
-            ALHAN
-          </button>
-          <button className={`browser-toggle ${browserOpen ? "selected" : ""}`} onClick={() => setBrowserOpen(!browserOpen)}>
-            <FolderOpen size={16} />
-            LIBRARY
-            {browserOpen ? <X size={14} /> : <span className="library-count">{localTracks.length + youtubeTracks.length}</span>}
-          </button>
         </div>
       </header>
 
@@ -2137,8 +2132,6 @@ export default function DjConsole() {
             <button type="button" onClick={() => setMode("home")}><House size={16} /><span>Home</span></button>
             <button type="button" onClick={() => setMode("dj")}><Headphones size={16} /><span>DJ</span></button>
             <button type="button" onClick={() => setMode("music")}><Music2 size={16} /><span>8D</span></button>
-            <button type="button" onClick={() => setBrowserOpen(true)}><FolderOpen size={16} /><span>Library</span></button>
-            <button type="button" onClick={() => setAiOpen(true)}><Sparkles size={16} /><span>ALHAN</span></button>
           </nav>
         </section>
       ) : mode === "dj" ? (
@@ -2157,6 +2150,14 @@ export default function DjConsole() {
             <div className="mixer-heading">
               <SlidersHorizontal size={15} />
               <span>MIXER</span>
+              <button
+                type="button"
+                className={`browser-toggle beatpad-toggle ${beatPadOpen ? "selected" : ""}`}
+                onClick={() => setBeatPadOpen((open) => !open)}
+                aria-pressed={beatPadOpen}
+              >
+                <Gamepad2 size={15} /> PADS
+              </button>
             </div>
             <div className="mixer-spectrum"><SpectrumMeter engine={engine} /></div>
             <div className="mixer-level">

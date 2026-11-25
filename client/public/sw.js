@@ -1,5 +1,5 @@
 const CACHE = "alhan-dj-v1";
-const APP_SHELL = ["/", "/manifest.json", "/alhan-icon.svg"];
+const APP_SHELL = ["/", "/manifest.json", "/alhan-app-icon.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

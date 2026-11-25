@@ -6,8 +6,8 @@ export const metadata: Metadata = {
   description: "A browser-based dual-deck DJ mixer with 8D spatial effects.",
   manifest: "/manifest.json",
   icons: {
-    icon: "/alhan-icon.svg",
-    apple: "/alhan-icon.svg",
+    icon: "/alhan-app-icon.png",
+    apple: "/alhan-app-icon.png",
   },
 };
 
