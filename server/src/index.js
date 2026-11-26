@@ -19,9 +19,12 @@ import {
   isRequestedFormatUnavailable,
   runWithAudioFormatFallback,
 } from "./ytDlpFormats.js";
+import { createConcurrencyLimiter } from "./ytDlpLimiter.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 5000);
+const STREAM_PLAYER_CLIENTS = "web_safari,ios,tv_embedded,default";
+const runWithYtDlpSlot = createConcurrencyLimiter(2);
 const frontendUrl = process.env.FRONTEND_URL?.trim();
 const normalizeOrigin = (origin) => origin.trim().replace(/\/+$/, "");
 const allowedOrigins = new Set(
@@ -323,7 +326,7 @@ function formatYtDlpError(message) {
   return message;
 }
 
-function runYtDlp(args, timeoutMs = 90_000, operation = "command") {
+function runYtDlpProcess(args, timeoutMs = 50_000, operation = "command") {
   logYtDlpAttempt(operation, args);
   return new Promise((resolve, reject) => {
     let child;
@@ -381,6 +384,12 @@ function runYtDlp(args, timeoutMs = 90_000, operation = "command") {
       reject(error);
     });
   });
+}
+
+function runYtDlp(args, timeoutMs = 50_000, operation = "command") {
+  return runWithYtDlpSlot(() =>
+    runYtDlpProcess(args, timeoutMs, operation),
+  );
 }
 
 function getYouTubeVideoId(value) {
@@ -541,7 +550,7 @@ app.get("/api/search", async (request, response) => {
     ];
     let result;
     try {
-      result = await runYtDlp(ytArgs, 90_000, "search");
+      result = await runYtDlp(ytArgs, 50_000, "search");
     } catch (firstError) {
       if (!/timed out/i.test(
         firstError instanceof Error ? firstError.message : "",
@@ -554,7 +563,7 @@ app.get("/api/search", async (request, response) => {
         "1",
         "--flat-playlist",
         `ytsearch10:${query}`,
-      ], 120_000, "search-timeout-retry");
+      ], 50_000, "search-timeout-retry");
     }
     const data = JSON.parse(result);
     const entries = Array.isArray(data.entries) ? data.entries : [data];
@@ -594,6 +603,8 @@ async function resolveStreamUrl(videoId) {
       "--no-check-certificates",
       "-f",
       AUDIO_FIRST_FORMAT,
+      "--extractor-args",
+      `youtube:player_client=${STREAM_PLAYER_CLIENTS}`,
       "--get-url",
       `https://www.youtube.com/watch?v=${videoId}`,
     ];
@@ -603,7 +614,7 @@ async function resolveStreamUrl(videoId) {
       (attemptArgs, isFallback) =>
         runYtDlp(
           attemptArgs,
-          30_000,
+          50_000,
           isFallback ? "stream-resolve-format-fallback" : "stream-resolve",
         ),
       () => {
@@ -615,6 +626,7 @@ async function resolveStreamUrl(videoId) {
     );
     const streamUrl = parseResolvedStreamUrl(output);
     const metadata = getResolvedStreamMetadata(streamUrl);
+    const resolvedUrlHost = new URL(streamUrl).hostname;
     const extension =
       metadata.mimeType === "audio/webm"
         ? "webm"
@@ -624,7 +636,7 @@ async function resolveStreamUrl(videoId) {
             ? "mp3"
             : "unknown";
     console.info(
-      `[yt-dlp] stream-resolve selected audio; format=${
+      `[yt-dlp] stream-resolve succeeded; player_client=${STREAM_PLAYER_CLIENTS}; resolved_url_host=${resolvedUrlHost}; format=${
         formatFallbackUsed ? AUDIO_FALLBACK_FORMAT : AUDIO_FIRST_FORMAT
       }; extension=${extension}; mime=${metadata.mimeType}; retry=${formatFallbackUsed ? "fallback" : "none"}.`,
     );
