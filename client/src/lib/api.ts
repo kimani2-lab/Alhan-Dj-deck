@@ -1,8 +1,9 @@
 const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
 
 export const API_URL = (
-  configuredApiUrl ||
-  (process.env.NODE_ENV === "production" ? "" : "http://localhost:5000")
+  process.env.NODE_ENV === "production"
+    ? ""
+    : configuredApiUrl || "http://localhost:5000"
 ).replace(/\/$/, "");
 
 export function apiUrl(path: string): string {
@@ -44,7 +45,7 @@ export async function fetchApi(
     );
   }
   throw new Error(
-    `Could not reach the audio server at ${API_URL}. Check internet access, CORS, and the Render service status.`,
+    `Could not reach ${API_URL ? `the audio server at ${API_URL}` : "the audio API"}. Check internet access and confirm the audio service is running.`,
   );
 }
 

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { mkdtemp, readdir, rm, writeFile, chmod, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -70,12 +70,86 @@ async function ensureYtDlp() {
   console.log("Downloaded yt-dlp runtime.");
 }
 
-let ytDlpCookiesPath = process.env.YT_DLP_COOKIES_FILE?.trim() || null;
+const youtubeCookiesPath =
+  process.platform === "win32"
+    ? path.join(os.tmpdir(), "yt-cookies.txt")
+    : "/tmp/yt-cookies.txt";
+let ytDlpCookiesPath = null;
+
+function decodeBase64Cookies(encoded) {
+  const compact = encoded.replace(/\s+/g, "");
+  const unpadded = compact.replace(/=+$/, "");
+  const padding = compact.length - unpadded.length;
+  const expectedPadding = (4 - (unpadded.length % 4)) % 4;
+
+  if (
+    !unpadded ||
+    !/^[A-Za-z0-9+/]+$/.test(unpadded) ||
+    padding > 2 ||
+    (padding > 0 && compact.length % 4 !== 0) ||
+    (padding > 0 && padding !== expectedPadding) ||
+    unpadded.length % 4 === 1
+  ) {
+    throw new Error("YOUTUBE_COOKIES_BASE64 is not valid Base64.");
+  }
+
+  const contents = Buffer.from(compact, "base64");
+  if (
+    contents.length === 0 ||
+    contents.toString("base64").replace(/=+$/, "") !== unpadded
+  ) {
+    throw new Error("YOUTUBE_COOKIES_BASE64 is not valid Base64.");
+  }
+  return contents;
+}
 
 async function ensureCookiesFile() {
-  if (ytDlpCookiesPath) return;
+  const encoded = process.env.YOUTUBE_COOKIES_BASE64;
+  if (encoded !== undefined) {
+    try {
+      const contents = decodeBase64Cookies(encoded);
+      await writeFile(youtubeCookiesPath, contents, { mode: 0o600 });
+      await chmod(youtubeCookiesPath, 0o600);
+      ytDlpCookiesPath = youtubeCookiesPath;
+      console.info(
+        `[startup] YouTube cookies loaded from YOUTUBE_COOKIES_BASE64 to ${youtubeCookiesPath} (mode 0600).`,
+      );
+    } catch (error) {
+      ytDlpCookiesPath = null;
+      console.error(
+        `[startup] YouTube cookies failed to load from YOUTUBE_COOKIES_BASE64: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+      );
+    }
+    return;
+  }
+
+  const configuredFile = process.env.YT_DLP_COOKIES_FILE?.trim();
+  if (configuredFile) {
+    try {
+      const metadata = await stat(configuredFile);
+      if (!metadata.isFile()) throw new Error("Configured cookie path is not a file.");
+      ytDlpCookiesPath = configuredFile;
+      console.info("[startup] YouTube cookies loaded from YT_DLP_COOKIES_FILE.");
+    } catch (error) {
+      ytDlpCookiesPath = null;
+      console.error(
+        `[startup] YouTube cookies failed to load from YT_DLP_COOKIES_FILE: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+      );
+    }
+    return;
+  }
+
   const inline = process.env.YT_DLP_COOKIES?.trim();
-  if (!inline) return;
+  if (!inline) {
+    console.info(
+      "[startup] YouTube cookies are not configured; yt-dlp will run without --cookies.",
+    );
+    return;
+  }
 
   let content = inline;
   const looksLikeCookies = (value) =>
@@ -90,25 +164,63 @@ async function ensureCookiesFile() {
   }
 
   const file = path.join(os.tmpdir(), "alhan-yt-cookies.txt");
-  await writeFile(file, content, { mode: 0o600 });
-  ytDlpCookiesPath = file;
-  console.log("Loaded YouTube cookies for yt-dlp.");
+  try {
+    await writeFile(file, content, { mode: 0o600 });
+    await chmod(file, 0o600);
+    ytDlpCookiesPath = file;
+    console.info("[startup] YouTube cookies loaded from YT_DLP_COOKIES.");
+  } catch (error) {
+    ytDlpCookiesPath = null;
+    console.error(
+      `[startup] YouTube cookies failed to load from YT_DLP_COOKIES: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`,
+    );
+  }
+}
+
+function getYtDlpBaseArgs() {
+  const args = ["--no-warnings", "--sleep-requests", "1"];
+  if (ytDlpCookiesPath && existsSync(ytDlpCookiesPath)) {
+    args.push("--cookies", ytDlpCookiesPath);
+  }
+  return args;
 }
 
 function getYtDlpCommonArgs() {
   const args = [
-    "--no-warnings",
     "--no-playlist",
     "--socket-timeout",
     "20",
+    "--extractor-retries",
+    "1",
     "--retries",
-    "2",
+    "1",
     "--force-ipv4",
   ];
   const runtime = process.env.YT_DLP_JS_RUNTIME?.trim();
   if (runtime) args.push("--js-runtimes", runtime);
-  if (ytDlpCookiesPath) args.push("--cookies", ytDlpCookiesPath);
   return args;
+}
+
+function logYtDlpAttempt(operation, args) {
+  const extractorArgsIndex = args.indexOf("--extractor-args");
+  const clientSetting =
+    extractorArgsIndex >= 0 ? args[extractorArgsIndex + 1] : null;
+  const client = clientSetting?.match(/player_client=([^&]+)/)?.[1] ?? "default";
+  console.info(
+    `[yt-dlp] ${operation} attempt; --cookies ${
+      args.includes("--cookies") ? "passed" : "not passed"
+    }; player_client=${client}.`,
+  );
+}
+
+function logYtDlpFailure(operation, stderr) {
+  console.error(
+    `[yt-dlp] ${operation} failed; exact stderr follows:\n${
+      stderr || "(empty stderr)"
+    }`,
+  );
 }
 
 function setStreamCorsHeaders(request, response) {
@@ -184,15 +296,20 @@ function formatYtDlpError(message) {
   return message;
 }
 
-function runYtDlp(args, timeoutMs = 90_000) {
+function runYtDlp(args, timeoutMs = 90_000, operation = "command") {
+  logYtDlpAttempt(operation, args);
   return new Promise((resolve, reject) => {
     let child;
     let timedOut = false;
+    let settled = false;
     const stdout = [];
     const stderr = [];
     const timer = setTimeout(() => {
+      if (settled) return;
       timedOut = true;
+      settled = true;
       child?.kill();
+      logYtDlpFailure(operation, Buffer.concat(stderr).toString("utf8"));
       reject(new Error("yt-dlp request timed out."));
     }, timeoutMs);
 
@@ -205,17 +322,23 @@ function runYtDlp(args, timeoutMs = 90_000) {
       child.stdout.on("data", (chunk) => stdout.push(chunk));
       child.stderr.on("data", (chunk) => stderr.push(chunk));
       child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
+        logYtDlpFailure(operation, "");
         reject(error);
       });
       child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         if (code !== 0) {
+          const stderrText = Buffer.concat(stderr).toString("utf8");
+          logYtDlpFailure(operation, stderrText);
           reject(
             new Error(
               formatYtDlpError(
-                Buffer.concat(stderr).toString("utf8").trim() ||
-                  `yt-dlp exited with status ${code}.`,
+                stderrText.trim() || `yt-dlp exited with status ${code}.`,
               ),
             ),
           );
@@ -224,7 +347,10 @@ function runYtDlp(args, timeoutMs = 90_000) {
         resolve(Buffer.concat(stdout).toString("utf8"));
       });
     }).catch((error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      logYtDlpFailure(operation, "");
       reject(error);
     });
   });
@@ -341,7 +467,7 @@ app.get("/api/health", (_request, response) => {
 
 app.get("/api/status", async (_request, response) => {
   try {
-    await runYtDlp(["--version"], 10_000);
+    await runYtDlp([...getYtDlpBaseArgs(), "--version"], 10_000, "status");
     response.json({ status: "ok", ytDlp: "available" });
   } catch (error) {
     response.status(503).json({
@@ -378,12 +504,9 @@ app.get("/api/search", async (request, response) => {
       return;
     }
     const ytArgs = [
+      ...getYtDlpBaseArgs(),
+      ...getYtDlpCommonArgs(),
       "--dump-single-json",
-      "--no-warnings",
-      "--socket-timeout",
-      "20",
-      "--retries",
-      "2",
       ...(videoId ? [] : ["--flat-playlist"]),
       videoId
         ? `https://www.youtube.com/watch?v=${videoId}`
@@ -391,21 +514,20 @@ app.get("/api/search", async (request, response) => {
     ];
     let result;
     try {
-      result = await runYtDlp(ytArgs);
+      result = await runYtDlp(ytArgs, 90_000, "search");
     } catch (firstError) {
-      if (!/timed out|status 429|too many requests/i.test(
+      if (!/timed out/i.test(
         firstError instanceof Error ? firstError.message : "",
       )) throw firstError;
       result = await runYtDlp([
+        ...getYtDlpBaseArgs(),
+        ...getYtDlpCommonArgs(),
         "--dump-single-json",
-        "--no-warnings",
-        "--socket-timeout",
-        "30",
         "--extractor-retries",
-        "2",
+        "1",
         "--flat-playlist",
         `ytsearch10:${query}`,
-      ], 120_000);
+      ], 120_000, "search-timeout-retry");
     }
     const data = JSON.parse(result);
     const entries = Array.isArray(data.entries) ? data.entries : [data];
@@ -431,6 +553,7 @@ const PLAYER_CLIENTS = [null, "android", "ios", "tv", "mweb"];
 
 function buildAudioArgs(videoId, client) {
   return [
+    ...getYtDlpBaseArgs(),
     ...getYtDlpCommonArgs(),
     "--quiet",
     "-f",
@@ -491,6 +614,7 @@ function attemptStream(response, videoId, args, download) {
     timer = setTimeout(() => {
       if (started) return;
       if (child && !child.killed) child.kill();
+      logYtDlpFailure("stream", stderr);
       finish(
         new Error(
           "YouTube did not send any audio before the request timed out. The video may be unavailable or the server IP may be blocked.",
@@ -498,6 +622,7 @@ function attemptStream(response, videoId, args, download) {
       );
     }, 60_000);
 
+    logYtDlpAttempt("stream", args);
     spawnYtDlp(args)
       .then((spawned) => {
         child = spawned;
@@ -506,12 +631,18 @@ function attemptStream(response, videoId, args, download) {
           finish(new Error("The client disconnected."));
           return;
         }
+        if (settled) {
+          child.kill();
+          return;
+        }
 
         child.stderr.on("data", (chunk) => {
           stderr += chunk.toString("utf8");
-          if (stderr.length > 8_000) stderr = stderr.slice(-8_000);
         });
-        child.on("error", (error) => finish(error));
+        child.on("error", (error) => {
+          logYtDlpFailure("stream", stderr);
+          finish(error);
+        });
         child.stdout.once("data", (firstChunk) => {
           if (started || settled) return;
           if (response.destroyed) {
@@ -541,11 +672,16 @@ function attemptStream(response, videoId, args, download) {
           resolve();
         });
         child.on("close", (code) => {
-          if (started) return;
+          if (started) {
+            if (code !== 0) logYtDlpFailure("stream", stderr);
+            return;
+          }
+          if (settled) return;
           if (clientClosed) {
             finish(new Error("The client disconnected."));
             return;
           }
+          logYtDlpFailure("stream", stderr);
           finish(
             new Error(
               formatYtDlpError(
@@ -555,7 +691,10 @@ function attemptStream(response, videoId, args, download) {
           );
         });
       })
-      .catch((error) => finish(error));
+      .catch((error) => {
+        logYtDlpFailure("stream", "");
+        finish(error);
+      });
   });
 }
 
@@ -570,7 +709,17 @@ async function streamYtDlp(response, videoId, download = false) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (response.destroyed || response.headersSent) return;
       if (
-        !/sign in to confirm|not a bot|requested format|http error 403|status 429|too many requests|timed out|no audio/i.test(
+        /sign in to confirm|not a bot|http error 403|status 429|too many requests/i.test(
+          lastError.message,
+        )
+      ) {
+        console.warn(
+          "[yt-dlp] Stream bot-check/rate-limit response; stopping player-client retries.",
+        );
+        break;
+      }
+      if (
+        !/requested format|timed out|no audio/i.test(
           lastError.message,
         )
       ) {
@@ -605,6 +754,7 @@ async function runYtDlpWithClientFallback(videoId, outputTemplate) {
     try {
       return await runYtDlp(
         [
+          ...getYtDlpBaseArgs(),
           ...getYtDlpCommonArgs(),
           "--quiet",
           "--extract-audio",
@@ -620,11 +770,22 @@ async function runYtDlpWithClientFallback(videoId, outputTemplate) {
           `https://www.youtube.com/watch?v=${videoId}`,
         ],
         180_000,
+        "download",
       );
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (
-        !/sign in to confirm|not a bot|requested format|http error 403|status 429|too many requests|timed out/i.test(
+        /sign in to confirm|not a bot|http error 403|status 429|too many requests/i.test(
+          lastError.message,
+        )
+      ) {
+        console.warn(
+          "[yt-dlp] Download bot-check/rate-limit response; stopping player-client retries.",
+        );
+        break;
+      }
+      if (
+        !/requested format|timed out/i.test(
           lastError.message,
         )
       ) {

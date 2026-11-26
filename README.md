@@ -67,14 +67,12 @@ The client plays YouTube audio by fetching `GET /api/stream/:videoId`, which run
 
 If songs still fail on your host, the IP is being challenged. In order of reliability:
 
-1. Provide signed-in YouTube cookies. Export a Netscape-format `cookies.txt` from a browser where you are logged in, then set either:
-   - `YT_DLP_COOKIES_FILE` to the mounted file path, or
-   - `YT_DLP_COOKIES` to the cookie file contents (raw or base64-encoded).
+1. Provide signed-in YouTube cookies. Export a Netscape-format `cookies.txt` from a browser where you are logged in, Base64-encode it, and set `YOUTUBE_COOKIES_BASE64`. The server writes it to `/tmp/yt-cookies.txt` with mode `0600` at startup. Existing deployments can also use `YT_DLP_COOKIES_FILE` or `YT_DLP_COOKIES`.
 2. Keep `yt-dlp` current. The server downloads the latest release at boot and the Docker image installs it at build time.
 3. Make sure a JavaScript runtime is available. The Docker image uses Node 22 and sets `YT_DLP_JS_RUNTIME=node`.
 4. If the whole IP range is blocked, move the API to a host with a residential/clean IP or route `yt-dlp` through a proxy.
 
-For Vercel, set `NEXT_PUBLIC_API_URL` to the backend origin (for example `https://alhan-dj-deck-1.onrender.com`). On the backend, set `FRONTEND_URL` to the exact frontend origin without a trailing slash (for example `https://alhan-8d-music-1.vercel.app`); trailing slashes are now normalized automatically.
+For Vercel, set `NEXT_PUBLIC_API_URL` to the backend origin (for example `https://alhan-dj-deck-1.onrender.com`). The browser uses same-origin `/api` requests, and the Next.js rewrite forwards them to that backend to avoid browser CORS failures. On the backend, set `FRONTEND_URL` to the exact frontend origin without a trailing slash (for example `https://alhan-8d-music-1.vercel.app`); trailing slashes are now normalized automatically.
 
 ## Audio engine
 

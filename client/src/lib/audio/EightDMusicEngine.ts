@@ -302,8 +302,8 @@ export class EightDMusicEngine {
     this.pause();
     this.sourceOutput.disconnect();
     this.trebleFilter.disconnect();
-    this.bassFilter.disconnect();
     this.bassEnhancement.dispose();
+    this.bassFilter.disconnect();
     this.compressor.disconnect();
     this.spatialEngine.dispose();
     this.analyser.disconnect();

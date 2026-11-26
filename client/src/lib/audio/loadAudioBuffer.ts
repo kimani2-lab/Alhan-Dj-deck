@@ -1,3 +1,5 @@
+import { fetchApi } from "../api.ts";
+
 async function readAudioError(response: Response): Promise<string> {
   const fallback = `Audio request failed (${response.status}).`;
   try {
@@ -18,9 +20,9 @@ async function readAudioError(response: Response): Promise<string> {
 
 export async function fetchAudioBuffer(
   context: AudioContext,
-  url: string,
+  path: string,
 ): Promise<AudioBuffer> {
-  const response = await fetch(url, { mode: "cors", credentials: "omit" });
+  const response = await fetchApi(path, { credentials: "omit" });
   if (!response.ok) {
     throw new Error(await readAudioError(response));
   }

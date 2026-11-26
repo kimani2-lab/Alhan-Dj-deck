@@ -17,7 +17,13 @@ class FakeNode {
   connect(node) {
     this.connections.push(node);
   }
-  disconnect() {
+  disconnect(node) {
+    if (node) {
+      const connection = this.connections.indexOf(node);
+      if (connection < 0) throw new Error("Audio node is not connected.");
+      this.connections.splice(connection, 1);
+      return;
+    }
     this.connections = [];
   }
 }

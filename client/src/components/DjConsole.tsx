@@ -17,6 +17,7 @@ import {
   ListChecks,
   ListPlus,
   LoaderCircle,
+  Menu,
   Music2,
   Pause,
   Play,
@@ -750,6 +751,7 @@ export default function DjConsole() {
   const [crossfader, setCrossfader] = useState(0);
   const [masterVolume, setMasterVolume] = useState(0.82);
   const [mode, setMode] = useState<AppMode>("home");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [beatPadOpen, setBeatPadOpen] = useState(false);
   const taste = useTasteProfile();
   const tasteProfile =
@@ -792,6 +794,15 @@ export default function DjConsole() {
   }>({ items: [], index: -1, active: false });
   const explicitEcosystemSeedRef = useRef<string | null>(null);
   const autoPlayClearedTrackRef = useRef<{ trackId: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileNavOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mobileNavOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -967,7 +978,7 @@ export default function DjConsole() {
       setError("");
       try {
         await eightD.loadUrl(
-          apiUrl(`/api/stream/${encodeURIComponent(track.id)}`),
+          `/api/stream/${encodeURIComponent(track.id)}`,
           track.title,
           {
             id: track.id,
@@ -1257,7 +1268,7 @@ export default function DjConsole() {
       await mixer.resume();
       await mixer.loadUrl(
         id,
-        apiUrl(`/api/stream/${encodeURIComponent(track.id)}`),
+        `/api/stream/${encodeURIComponent(track.id)}`,
         track.title,
         {
           id: track.id,
@@ -1654,17 +1665,32 @@ export default function DjConsole() {
 
   return (
     <main className={`app-shell ${mode === "home" ? "home-mode" : ""} ${browserOpen ? "browser-expanded" : ""} ${aiOpen ? "ai-panel-open" : ""}`}>
-      <aside className="nav-rail" aria-label="Main navigation">
+      <aside
+        id="main-navigation-panel"
+        className={`nav-rail ${mobileNavOpen ? "mobile-open" : ""}`}
+        aria-label="Main navigation"
+      >
         <a className="rail-brand" href="#" aria-label="Alhan DJ home">
           <span className="rail-brand-mark"><AudioLines size={25} /></span>
           <span>ALHAN <b>DJ</b></span>
         </a>
+        <button
+          className="mobile-nav-close"
+          type="button"
+          aria-label="Close navigation menu"
+          onClick={() => setMobileNavOpen(false)}
+        >
+          <X size={18} />
+        </button>
         <nav className="rail-nav">
           <button
             type="button"
             className={`rail-item ${mode === "home" ? "active" : ""}`}
             aria-pressed={mode === "home"}
-            onClick={() => setMode("home")}
+            onClick={() => {
+              setMode("home");
+              setMobileNavOpen(false);
+            }}
           >
             <House size={17} /> <span>Home</span>
           </button>
@@ -1672,7 +1698,10 @@ export default function DjConsole() {
             type="button"
             className={`rail-item ${mode === "music" ? "active" : ""}`}
             aria-pressed={mode === "music"}
-            onClick={() => setMode("music")}
+            onClick={() => {
+              setMode("music");
+              setMobileNavOpen(false);
+            }}
           >
             <Music2 size={17} /> <span>8D Music</span>
           </button>
@@ -1680,7 +1709,10 @@ export default function DjConsole() {
             type="button"
             className={`rail-item ${mode === "dj" ? "active" : ""}`}
             aria-pressed={mode === "dj"}
-            onClick={() => setMode("dj")}
+            onClick={() => {
+              setMode("dj");
+              setMobileNavOpen(false);
+            }}
           >
             <Headphones size={17} /> <span>DJ Mode</span>
           </button>
@@ -1688,7 +1720,10 @@ export default function DjConsole() {
             type="button"
             className={`rail-item ${aiOpen ? "active" : ""}`}
             aria-pressed={aiOpen}
-            onClick={() => setAiOpen((open) => !open)}
+            onClick={() => {
+              setAiOpen((open) => !open);
+              setMobileNavOpen(false);
+            }}
           >
             <Bot size={17} /> <span>ALHAN Bot</span>
           </button>
@@ -1696,7 +1731,10 @@ export default function DjConsole() {
             type="button"
             className={`rail-item ${mode === "settings" ? "active" : ""}`}
             aria-pressed={mode === "settings"}
-            onClick={() => setMode("settings")}
+            onClick={() => {
+              setMode("settings");
+              setMobileNavOpen(false);
+            }}
           >
             <Settings size={17} /> <span>Settings</span>
           </button>
@@ -1704,7 +1742,10 @@ export default function DjConsole() {
             type="button"
             className={`rail-item ${mode === "about" ? "active" : ""}`}
             aria-pressed={mode === "about"}
-            onClick={() => setMode("about")}
+            onClick={() => {
+              setMode("about");
+              setMobileNavOpen(false);
+            }}
           >
             <Info size={17} /> <span>About</span>
           </button>
@@ -1716,10 +1757,28 @@ export default function DjConsole() {
         </div>
       </aside>
 
+      {mobileNavOpen && (
+        <button
+          className="nav-drawer-backdrop"
+          type="button"
+          aria-label="Close navigation menu"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      )}
+
       <div className="console-shell">
       <header className="topbar">
         <div className="topbar-center">
-          <span />
+          <button
+            className="mobile-nav-toggle"
+            type="button"
+            aria-controls="main-navigation-panel"
+            aria-expanded={mobileNavOpen}
+            aria-label={mobileNavOpen ? "Close navigation menu" : "Open navigation menu"}
+            onClick={() => setMobileNavOpen((open) => !open)}
+          >
+            {mobileNavOpen ? <X size={19} /> : <Menu size={19} />}
+          </button>
         </div>
         <div className="topbar-actions">
           <PwaInstallButton />
@@ -1783,11 +1842,6 @@ export default function DjConsole() {
                     Explore Genres <ChevronRight size={13} />
                   </button>
                 </div>
-              </div>
-              <div className="alhan-headphone-art" aria-hidden="true">
-                <div className="alhan-headphone-glow" />
-                <Headphones size={150} strokeWidth={0.6} />
-                <span>ALHAN</span>
               </div>
             </div>
 
@@ -2153,11 +2207,6 @@ export default function DjConsole() {
               </button>
             </div>
           </div>
-          <nav className="home-mobile-nav" aria-label="Main navigation">
-            <button type="button" onClick={() => setMode("home")}><House size={16} /><span>Home</span></button>
-            <button type="button" onClick={() => setMode("dj")}><Headphones size={16} /><span>DJ</span></button>
-            <button type="button" onClick={() => setMode("music")}><Music2 size={16} /><span>8D</span></button>
-          </nav>
         </section>
       ) : mode === "dj" ? (
         <div className="workspace concert-mode dj-workspace">
