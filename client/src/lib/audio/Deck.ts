@@ -2,6 +2,11 @@ import {
   LargeHall8DEngine,
   type HallSize,
 } from "./LargeHall8DEngine.ts";
+import {
+  createBassEnhancement,
+  type BassEnhancement,
+} from "./bassEnhancement.ts";
+import { detectBpm, orbitSpeedForBpm } from "./bpm.ts";
 
 export {
   createHallImpulseResponse,
@@ -57,6 +62,7 @@ export class Deck {
   private readonly bassBoostFilter: BiquadFilterNode;
   private readonly filterNode: BiquadFilterNode;
   private readonly spatialEngine: LargeHall8DEngine;
+  private readonly bassEnhancement: BassEnhancement;
   private source: AudioBufferSourceNode | null = null;
   private buffer: AudioBuffer | null = null;
   private title = "No track loaded";
@@ -77,6 +83,7 @@ export class Deck {
   private spatialEnabled = false;
   private spatialSpeed = 0.12;
   private spatialDepth = 0.75;
+  private spatialBeatSync = true;
   private room = 0.44;
   private hallSize: HallSize = "hall";
   private loopEnabled = false;
@@ -118,6 +125,11 @@ export class Deck {
     this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
     this.spatialEngine.setRoom(this.room);
     this.spatialEngine.setHallSize(this.hallSize);
+    this.bassEnhancement = createBassEnhancement(
+      context,
+      this.filterNode,
+      this.spatialEngine.input,
+    );
 
     this.low.connect(this.mid);
     this.mid.connect(this.high);
@@ -172,6 +184,10 @@ export class Deck {
   ): Promise<void> {
     this.pause();
     this.buffer = buffer;
+    this.bpm = detectBpm(buffer);
+    this.spatialBeatSync = true;
+    this.spatialSpeed = orbitSpeedForBpm(this.bpm);
+    this.spatialEngine?.setOrbitSpeed(this.spatialSpeed);
     this.title = title;
     this.trackId = metadata?.id ?? null;
     this.channelTitle = metadata?.channelTitle ?? null;
@@ -273,7 +289,12 @@ export class Deck {
   }
 
   setBpm(bpm: number): void {
-    if (Number.isFinite(bpm) && bpm > 0) this.bpm = clamp(bpm, 40, 240);
+    if (!Number.isFinite(bpm) || bpm <= 0) return;
+    this.bpm = clamp(bpm, 40, 240);
+    if (this.spatialBeatSync) {
+      this.spatialSpeed = orbitSpeedForBpm(this.bpm);
+      this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
+    }
   }
 
   getBpm(): number {
@@ -370,9 +391,16 @@ export class Deck {
 
   setBassBoost(enabled: boolean): void {
     this.bassBoost = enabled;
-    this.bassBoostFilter.gain.setTargetAtTime(
-      enabled ? 6 : 0,
-      this.context.currentTime,
+    const now = this.context.currentTime;
+    this.bassBoostFilter.gain.setTargetAtTime(enabled ? 6 : 0, now, 0.08);
+    this.bassEnhancement.subGain.gain.setTargetAtTime(
+      enabled ? 1.2 : 0,
+      now,
+      0.08,
+    );
+    this.bassEnhancement.harmonicGain.gain.setTargetAtTime(
+      enabled ? 0.5 : 0,
+      now,
       0.08,
     );
   }
@@ -383,8 +411,13 @@ export class Deck {
   }
 
   setSpatialSpeed(hertz: number): void {
-    this.spatialSpeed = clamp(hertz, 0.04, 0.5);
+    this.spatialSpeed = clamp(hertz, 0.04, 1);
     this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
+  }
+
+  setSpatialSpeedManual(hertz: number): void {
+    this.spatialBeatSync = false;
+    this.setSpatialSpeed(hertz);
   }
 
   setSpatialDepth(depth: number): void {
@@ -445,6 +478,7 @@ export class Deck {
     this.mid.disconnect();
     this.high.disconnect();
     this.bassBoostFilter.disconnect();
+    this.bassEnhancement.dispose();
     this.filterNode.disconnect();
     this.spatialEngine.dispose();
     this.output.disconnect();

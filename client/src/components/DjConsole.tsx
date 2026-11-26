@@ -669,10 +669,10 @@ function DeckPanel({
           label="SPEED"
           value={snapshot.spatial.speed}
           min={0.04}
-          max={0.3}
+          max={1}
           accent={accent}
           display={`${snapshot.spatial.speed.toFixed(2)} Hz`}
-          onChange={(value) => update((item) => item.setSpatialSpeed(value))}
+          onChange={(value) => update((item) => item.setSpatialSpeedManual(value))}
         />
         <Rotary
           label="WIDTH"
@@ -860,6 +860,8 @@ export default function DjConsole() {
       A: mixer.deckA.getSnapshot(),
       B: mixer.deckB.getSnapshot(),
     });
+    const eightD = eightDEngineRef.current;
+    if (eightD) setEightDSnapshot(eightD.getSnapshot());
   }, []);
 
   const refreshEcosystemQueue = useCallback(() => {
@@ -880,7 +882,7 @@ export default function DjConsole() {
   }, [queueManager, tasteProfile]);
 
   useEffect(() => {
-    if (taste.hasCompletedTaste) return;
+    if (!taste.isLoaded || taste.hasCompletedTaste) return;
     let alreadyPrompted = false;
     try {
       alreadyPrompted =
@@ -898,7 +900,7 @@ export default function DjConsole() {
       setGenreOnboardingOpen(true);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [taste.hasCompletedTaste]);
+  }, [taste.hasCompletedTaste, taste.isLoaded]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1388,9 +1390,9 @@ export default function DjConsole() {
   const playAiStep = useCallback(async (item: AiSetQueueItem): Promise<boolean> => {
     const eightD = eightDEngineRef.current;
     if (!eightD) return false;
-    if (!(await loadEightDMusicTrack(item.track))) return false;
     eightD.setSpatialEnabled(item.step.enable8d);
     eightD.setBassBoost(item.step.bassBoost);
+    if (!(await loadEightDMusicTrack(item.track))) return false;
     explicitEcosystemSeedRef.current = null;
     autoPlayClearedTrackRef.current = null;
     queueManager.setSeed(item.track);
@@ -1454,12 +1456,11 @@ export default function DjConsole() {
     if (!(await loadEightDMusicTrack(track))) return false;
     const eightD = eightDEngineRef.current;
     if (!eightD) return false;
-    eightD.setSpatialEnabled(true);
     queueManager.markPlaying(track);
     refreshEcosystemQueue();
     refresh();
     return true;
-  }, [loadYoutubeTrack, queueManager, refresh, refreshEcosystemQueue]);
+  }, [loadEightDMusicTrack, queueManager, refresh, refreshEcosystemQueue]);
 
   const playTrackIn8D = useCallback(
     async (track: TrackResult) => {
@@ -1945,9 +1946,9 @@ export default function DjConsole() {
                         >
                           <button
                             type="button"
-                            className="alhan-track-art"
+                            className={`alhan-track-art ${loadingId === track.id ? "is-loading" : ""}`}
                             aria-label={`Play ${track.title} in 8D`}
-                            disabled={loadingId === track.id}
+                            disabled={!eightDEngine || loadingId !== null}
                             onClick={() => void playTrackIn8D(track)}
                           >
                             <TrackArtwork
@@ -1956,7 +1957,11 @@ export default function DjConsole() {
                               alt={`${track.title} artwork`}
                             />
                             <span>
-                              <Play size={16} fill="currentColor" />
+                              {loadingId === track.id ? (
+                                <LoaderCircle className="spinner" size={16} />
+                              ) : (
+                                <Play size={16} fill="currentColor" />
+                              )}
                             </span>
                           </button>
                           <b title={track.title}>{track.title}</b>
@@ -2009,6 +2014,8 @@ export default function DjConsole() {
                       <button
                         type="button"
                         className="alhan-recent-main"
+                        aria-label={`Play ${track.title} in 8D`}
+                        disabled={!eightDEngine || loadingId !== null}
                         onClick={() => void playTrackIn8D(track)}
                       >
                         <TrackArtwork
@@ -2019,6 +2026,15 @@ export default function DjConsole() {
                           <b>{track.title}</b>
                           <small>{track.channelTitle}</small>
                         </span>
+                        {loadingId === track.id ? (
+                          <LoaderCircle className="spinner alhan-recent-play" size={13} />
+                        ) : (
+                          <Play
+                            className="alhan-recent-play"
+                            size={13}
+                            fill="currentColor"
+                          />
+                        )}
                       </button>
                       <details className="alhan-recent-menu">
                         <summary aria-label={`Actions for ${track.title}`}>
@@ -2027,9 +2043,10 @@ export default function DjConsole() {
                         <div>
                           <button
                             type="button"
+                            disabled={!eightDEngine || loadingId !== null}
                             onClick={() => void playTrackIn8D(track)}
                           >
-                            Play in 8D
+                            {loadingId === track.id ? "Playing…" : "Play in 8D"}
                           </button>
                           <button
                             type="button"

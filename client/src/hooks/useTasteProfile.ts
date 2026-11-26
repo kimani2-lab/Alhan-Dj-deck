@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TrackResult } from "../lib/tracks";
 import {
   loadTasteDraft,
@@ -39,18 +39,26 @@ const emptyProfile = (): TasteProfile => ({
 
 export function useTasteProfile(initialProfile?: TasteProfile | null) {
   const [profile, setProfile] = useState<TasteProfileWithHistory>(() => {
-    if (typeof window === "undefined") {
-      return { ...(initialProfile ?? emptyProfile()), recentlyPlayed: [] };
-    }
-    const stored =
-      loadTasteDraft(window.localStorage) ??
-      loadTasteProfile(window.localStorage);
     return {
-      ...(stored ?? initialProfile ?? emptyProfile()),
-      recentlyPlayed: loadRecentlyPlayed(),
+      ...(initialProfile ?? emptyProfile()),
+      recentlyPlayed: [],
     };
   });
   const profileRef = useRef(profile);
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  useEffect(() => {
+    const stored =
+      loadTasteDraft(window.localStorage) ??
+      loadTasteProfile(window.localStorage);
+    const next = {
+      ...(stored ?? profileRef.current),
+      recentlyPlayed: loadRecentlyPlayed(),
+    };
+    profileRef.current = next;
+    setProfile(next);
+    setIsLoaded(true);
+  }, []);
 
   const persist = useCallback((next: TasteProfileWithHistory) => {
     profileRef.current = next;
@@ -128,6 +136,7 @@ export function useTasteProfile(initialProfile?: TasteProfile | null) {
   return useMemo(
     () => ({
       profile,
+      isLoaded,
       hasCompletedTaste,
       updateProfile,
       setSelectedGenres,
@@ -138,6 +147,7 @@ export function useTasteProfile(initialProfile?: TasteProfile | null) {
     }),
     [
       profile,
+      isLoaded,
       hasCompletedTaste,
       updateProfile,
       setSelectedGenres,

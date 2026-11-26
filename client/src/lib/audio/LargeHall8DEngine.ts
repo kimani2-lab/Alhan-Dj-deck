@@ -101,6 +101,9 @@ export class LargeHall8DEngine {
   private readonly orbitTonePresence: BiquadFilterNode;
   private readonly orbitToneAir: BiquadFilterNode;
   private readonly panner: PannerNode;
+  private readonly orbitStereoPanner: StereoPannerNode;
+  private readonly orbitPanDepth: GainNode;
+  private readonly orbitDryGain: GainNode;
   private readonly preDelay: DelayNode;
   private readonly earlyLeft: DelayNode;
   private readonly earlyRight: DelayNode;
@@ -179,6 +182,12 @@ export class LargeHall8DEngine {
     this.panner.positionY.value = 0;
     this.panner.positionZ.value = -0.95;
 
+    this.orbitStereoPanner = context.createStereoPanner();
+    this.orbitPanDepth = context.createGain();
+    this.orbitPanDepth.gain.value = 0;
+    this.orbitDryGain = context.createGain();
+    this.orbitDryGain.gain.value = 0;
+
     this.preDelay = context.createDelay(0.25);
     this.preDelay.delayTime.value = 0.045;
 
@@ -236,6 +245,9 @@ export class LargeHall8DEngine {
     this.orbitToneLow.connect(this.orbitTonePresence);
     this.orbitTonePresence.connect(this.orbitToneAir);
     this.orbitToneAir.connect(this.panner);
+    this.panner.connect(this.orbitStereoPanner);
+    this.orbitStereoPanner.connect(this.orbitDryGain);
+    this.orbitDryGain.connect(this.mixBus);
     this.panner.connect(this.preDelay);
 
     this.preDelay.connect(this.earlyLeft);
@@ -258,6 +270,8 @@ export class LargeHall8DEngine {
 
     this.lfoX.connect(this.lfoXDepth);
     this.lfoXDepth.connect(this.panner.positionX);
+    this.lfoX.connect(this.orbitPanDepth);
+    this.orbitPanDepth.connect(this.orbitStereoPanner.pan);
     this.lfoZ.connect(this.lfoZDepth);
     this.lfoZDepth.connect(this.panner.positionZ);
     this.lfoX.start();
@@ -285,6 +299,7 @@ export class LargeHall8DEngine {
     const now = this.context.currentTime;
     this.bypassGain.gain.setTargetAtTime(enabled ? 0 : 1, now, 0.12);
     this.subGain.gain.setTargetAtTime(enabled ? 0.8 : 0, now, 0.12);
+    this.orbitDryGain.gain.setTargetAtTime(enabled ? 1 : 0, now, 0.12);
     this.updateOrbit(now);
     this.updateMix(now);
   }
@@ -298,7 +313,7 @@ export class LargeHall8DEngine {
     const now = this.context.currentTime;
     this.lfoPhase = this.readLfoPhase(now);
     this.phaseUpdatedAt = now;
-    this.speed = clamp(hertz, 0.04, 0.5);
+    this.speed = clamp(hertz, 0.04, 1);
     this.lfoX.frequency.setTargetAtTime(this.speed, now, 0.03);
     this.lfoZ.frequency.setTargetAtTime(this.speed, now, 0.03);
   }
@@ -342,6 +357,11 @@ export class LargeHall8DEngine {
     const radius = this.enabled ? this.width * 2.2 : 0;
     const depth = this.enabled ? this.width * 0.16 : 0;
     this.lfoXDepth.gain.setTargetAtTime(radius, now, 0.12);
+    this.orbitPanDepth.gain.setTargetAtTime(
+      this.enabled ? this.width : 0,
+      now,
+      0.12,
+    );
     this.lfoZDepth.gain.setTargetAtTime(-depth, now, 0.12);
   }
 
@@ -369,6 +389,9 @@ export class LargeHall8DEngine {
     this.orbitTonePresence.disconnect();
     this.orbitToneAir.disconnect();
     this.panner.disconnect();
+    this.orbitStereoPanner.disconnect();
+    this.orbitPanDepth.disconnect();
+    this.orbitDryGain.disconnect();
     this.preDelay.disconnect();
     this.earlyLeft.disconnect();
     this.earlyRight.disconnect();

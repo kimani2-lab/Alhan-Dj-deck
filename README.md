@@ -61,6 +61,21 @@ npm run build
 npm test
 ```
 
+## Deployment: YouTube playback on cloud hosts
+
+The client plays YouTube audio by fetching `GET /api/stream/:videoId`, which runs `yt-dlp` on the server. On cloud/datacenter hosts (Render, Railway, VPS, etc.) YouTube frequently answers `yt-dlp` with `Sign in to confirm you're not a bot`. When that happens the browser used to receive an empty `200` response, which surfaced as `Unable to decode audio data`. The server now returns a real error instead, and retries with alternate YouTube player clients.
+
+If songs still fail on your host, the IP is being challenged. In order of reliability:
+
+1. Provide signed-in YouTube cookies. Export a Netscape-format `cookies.txt` from a browser where you are logged in, then set either:
+   - `YT_DLP_COOKIES_FILE` to the mounted file path, or
+   - `YT_DLP_COOKIES` to the cookie file contents (raw or base64-encoded).
+2. Keep `yt-dlp` current. The server downloads the latest release at boot and the Docker image installs it at build time.
+3. Make sure a JavaScript runtime is available. The Docker image uses Node 22 and sets `YT_DLP_JS_RUNTIME=node`.
+4. If the whole IP range is blocked, move the API to a host with a residential/clean IP or route `yt-dlp` through a proxy.
+
+For Vercel, set `NEXT_PUBLIC_API_URL` to the backend origin (for example `https://alhan-dj-deck-1.onrender.com`). On the backend, set `FRONTEND_URL` to the exact frontend origin without a trailing slash (for example `https://alhan-8d-music-1.vercel.app`); trailing slashes are now normalized automatically.
+
 ## Audio engine
 
 `client/src/lib/audio/Deck.ts` encapsulates each deck's source, transport, 3-band EQ, filter, HRTF panner, generated stereo hall impulse response, spatial LFO, channel gain, cue state, and optional pad input. Hall 8D blends a clear dry path with a binaural orbit and convolved hall return. `MixerEngine.ts` owns both decks, the constant-power crossfader, a dedicated beat-pad bus, and master gain. `BeatPadEngine.ts` synthesizes eight one-shot sounds and creates a fresh buffer source per hit for polyphonic retriggering. `AudioEngine.ts` is the public export surface. React controls call these classes directly; waveform and transport UI state is sampled separately from the audio graph.

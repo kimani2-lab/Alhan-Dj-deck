@@ -248,6 +248,9 @@ export default function MusicPlayerMode({
 }) {
   const [scrubPosition, setScrubPosition] = useState<number | null>(null);
   const activeSnapshot = eightDSnapshot ?? snapshot;
+  const trebleMuted = eightDSnapshot?.trebleMuted ?? false;
+  const currentBpm = eightDSnapshot?.bpm ?? 120;
+  const beatSynced = eightDSnapshot?.spatial.beatSynced ?? false;
   const deck = engine?.deckA ?? null;
   const searchResult =
     tracks.find((track) => track.id === snapshot.trackId) ??
@@ -321,7 +324,9 @@ export default function MusicPlayerMode({
               <span className="visual-mode">{snapshot.spatial.enabled ? "SPATIAL FIELD ACTIVE" : "READY TO ORBIT"}</span>
             </div>
             <div className="stage-caption">
-              <span className="eyebrow">NOW PLAYING IN 8D</span>
+              <span className="eyebrow">
+                {snapshot.spatial.enabled ? "NOW PLAYING IN 8D" : "NOW PLAYING · STEREO"}
+              </span>
               <h1>{snapshot.title}</h1>
               <span>{snapshot.channelTitle ?? "ALHAN SPATIAL PLAYER"}</span>
             </div>
@@ -335,7 +340,7 @@ export default function MusicPlayerMode({
           <div className="spatial-control-strip">
             <div className="spatial-control-title">
               <Radio size={18} />
-              <div><b>LARGE HALL 8D ENGINE</b><small>HRTF ORBIT + HALL</small></div>
+              <div><b>LARGE HALL 8D ENGINE</b><small>INDEPENDENT TONE + SPATIAL</small></div>
             </div>
             <label className="music-fx-switch">
               <span>HALL 8D</span>
@@ -354,27 +359,47 @@ export default function MusicPlayerMode({
                 <i />
               </button>
             </label>
-            <button
-              className={`bass-boost-button ${snapshot.bassBoost ? "active" : ""}`}
-              type="button"
-              aria-pressed={snapshot.bassBoost}
-              onClick={() => {
-                if (!eightDEngine) return;
-                eightDEngine.setBassBoost(!snapshot.bassBoost);
-                onDeckChange();
-              }}
-            >
-              <AudioLines size={16} />
-              <span>BASS BOOST</span>
-              <small>{snapshot.bassBoost ? "ON" : "OFF"}</small>
-            </button>
+            <div className="music-tone-controls" role="group" aria-label="Tone effects">
+              <button
+                className={`bass-boost-button ${snapshot.bassBoost ? "active" : ""}`}
+                type="button"
+                aria-pressed={snapshot.bassBoost}
+                onClick={() => {
+                  if (!eightDEngine) return;
+                  eightDEngine.setBassBoost(!snapshot.bassBoost);
+                  onDeckChange();
+                }}
+              >
+                <AudioLines size={16} />
+                <span>BASS</span>
+                <small>{snapshot.bassBoost ? "ON" : "OFF"}</small>
+              </button>
+              <button
+                className={`bass-boost-button treble-cut-button ${trebleMuted ? "active" : ""}`}
+                type="button"
+                aria-pressed={trebleMuted}
+                aria-label="Toggle tweeter treble cut"
+                onClick={() => {
+                  if (!eightDEngine) return;
+                  eightDEngine.setTrebleMuted(!trebleMuted);
+                  onDeckChange();
+                }}
+              >
+                <AudioLines size={16} />
+                <span>TWEETER</span>
+                <small>{trebleMuted ? "OFF" : "ON"}</small>
+              </button>
+            </div>
             <label className="music-range">
               <span>ORBIT SPEED <b>{snapshot.spatial.speed.toFixed(2)} Hz</b></span>
+              <small className="orbit-sync-status">
+                {currentBpm} BPM · {beatSynced ? "BEAT SYNC" : "MANUAL"}
+              </small>
               <input
                 aria-label="Orbit speed"
                 type="range"
                 min={0.04}
-                max={0.3}
+                max={1}
                 step={0.01}
                 value={snapshot.spatial.speed}
                 onChange={(event) =>

@@ -10,27 +10,34 @@ import { registerAiDjRoutes } from "./aiDj.js";
 const app = express();
 const port = Number(process.env.PORT ?? 5000);
 const frontendUrl = process.env.FRONTEND_URL?.trim();
-const allowedOrigins = [
-  "http://localhost:3000",
-  "https://alhan-dj-deck.vercel.app",
-  "https://alhan-dj.vercel.app",
-  "https://alhan-dj-deck-kimani2-labs-projects.vercel.app",
-  "https://alhan-8d-music.co.ke",
-  "https://www.alhan-8d-music.co.ke",
-  ...(frontendUrl ? frontendUrl.split(",").map((origin) => origin.trim()).filter(Boolean) : []),
-];
+const normalizeOrigin = (origin) => origin.trim().replace(/\/+$/, "");
+const allowedOrigins = new Set(
+  [
+    "http://localhost:3000",
+    "https://alhan-dj-deck.vercel.app",
+    "https://alhan-dj.vercel.app",
+    "https://alhan-dj-deck-kimani2-labs-projects.vercel.app",
+    "https://alhan-8d-music.co.ke",
+    "https://www.alhan-8d-music.co.ke",
+    ...(frontendUrl
+      ? frontendUrl.split(",").map(normalizeOrigin).filter(Boolean)
+      : []),
+  ].map(normalizeOrigin),
+);
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  const normalized = normalizeOrigin(origin);
+  return (
+    allowedOrigins.has(normalized) ||
+    /^https:\/\/[^/]+\.vercel\.app$/i.test(normalized)
+  );
+}
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      const vercelPreview =
-        /^https:\/\/[^/]+\.vercel\.app$/i.test(origin ?? "");
-      callback(
-        null,
-        !origin ||
-          allowedOrigins.includes(origin) ||
-          vercelPreview,
-      );
+      callback(null, isAllowedOrigin(origin));
     },
   }),
 );
@@ -63,10 +70,52 @@ async function ensureYtDlp() {
   console.log("Downloaded yt-dlp runtime.");
 }
 
+let ytDlpCookiesPath = process.env.YT_DLP_COOKIES_FILE?.trim() || null;
+
+async function ensureCookiesFile() {
+  if (ytDlpCookiesPath) return;
+  const inline = process.env.YT_DLP_COOKIES?.trim();
+  if (!inline) return;
+
+  let content = inline;
+  const looksLikeCookies = (value) =>
+    /^#\s*HTTP Cookie File/im.test(value) || /^\S+\t\S*\t/m.test(value);
+  if (!looksLikeCookies(content)) {
+    try {
+      const decoded = Buffer.from(inline, "base64").toString("utf8");
+      if (looksLikeCookies(decoded)) content = decoded;
+    } catch {
+      // Not base64; use the raw value below.
+    }
+  }
+
+  const file = path.join(os.tmpdir(), "alhan-yt-cookies.txt");
+  await writeFile(file, content, { mode: 0o600 });
+  ytDlpCookiesPath = file;
+  console.log("Loaded YouTube cookies for yt-dlp.");
+}
+
+function getYtDlpCommonArgs() {
+  const args = [
+    "--no-warnings",
+    "--no-playlist",
+    "--socket-timeout",
+    "20",
+    "--retries",
+    "2",
+    "--force-ipv4",
+  ];
+  const runtime = process.env.YT_DLP_JS_RUNTIME?.trim();
+  if (runtime) args.push("--js-runtimes", runtime);
+  if (ytDlpCookiesPath) args.push("--cookies", ytDlpCookiesPath);
+  return args;
+}
+
 function setStreamCorsHeaders(request, response) {
   const origin = request.headers.origin;
-  if (!origin || allowedOrigins.includes(origin)) {
+  if (isAllowedOrigin(origin)) {
     response.setHeader("Access-Control-Allow-Origin", origin || "*");
+    if (origin) response.setHeader("Vary", "Origin");
   }
   response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   response.setHeader("Accept-Ranges", "none");
@@ -378,78 +427,165 @@ app.get("/api/search", async (request, response) => {
   }
 });
 
-function streamYtDlp(response, videoId, args, download = false) {
-  let timedOut = false;
-  let process;
-  let timeout;
-  let responseStarted = false;
-  let stderr = "";
+const PLAYER_CLIENTS = [null, "android", "ios", "tv", "mweb"];
 
-  const onClose = () => {
-    clearTimeout(timeout);
-    if (process && !process.killed) process.kill();
-  };
-  response.on("close", () => {
-    onClose();
-  });
+function buildAudioArgs(videoId, client) {
+  return [
+    ...getYtDlpCommonArgs(),
+    "--quiet",
+    "-f",
+    "bestaudio[ext=m4a]/bestaudio/best",
+    "-o",
+    "-",
+    ...(client ? ["--extractor-args", `youtube:player_client=${client}`] : []),
+    `https://www.youtube.com/watch?v=${videoId}`,
+  ];
+}
 
-  spawnYtDlp(args).then((child) => {
-    process = child;
-    if (response.destroyed) {
-      process.kill();
-      return;
-    }
+function sniffAudioContentType(chunk) {
+  if (chunk.length >= 8 && chunk.toString("ascii", 4, 8) === "ftyp") {
+    return "audio/mp4";
+  }
+  if (
+    chunk.length >= 4 &&
+    chunk[0] === 0x1a &&
+    chunk[1] === 0x45 &&
+    chunk[2] === 0xdf &&
+    chunk[3] === 0xa3
+  ) {
+    return "audio/webm";
+  }
+  if (chunk.length >= 3 && chunk.toString("ascii", 0, 3) === "ID3") {
+    return "audio/mpeg";
+  }
+  if (chunk.length >= 2 && chunk[0] === 0xff && (chunk[1] & 0xe0) === 0xe0) {
+    return "audio/mpeg";
+  }
+  return null;
+}
 
-    timeout = setTimeout(() => {
-      timedOut = true;
-      process.kill();
-    }, 120_000);
+function attemptStream(response, videoId, args, download) {
+  return new Promise((resolve, reject) => {
+    let child = null;
+    let settled = false;
+    let started = false;
+    let clientClosed = false;
+    let stderr = "";
+    let timer = null;
 
-    process.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-    });
-    process.on("error", (error) => {
-      clearTimeout(timeout);
-      if (!response.headersSent) {
-        response.status(502).json({
-          error: formatYtDlpError(error.message),
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      response.removeListener("close", onClientClose);
+      if (error) reject(error);
+      else resolve();
+    };
+
+    const onClientClose = () => {
+      clientClosed = true;
+      if (child && !child.killed) child.kill();
+    };
+    response.once("close", onClientClose);
+
+    timer = setTimeout(() => {
+      if (started) return;
+      if (child && !child.killed) child.kill();
+      finish(
+        new Error(
+          "YouTube did not send any audio before the request timed out. The video may be unavailable or the server IP may be blocked.",
+        ),
+      );
+    }, 60_000);
+
+    spawnYtDlp(args)
+      .then((spawned) => {
+        child = spawned;
+        if (response.destroyed) {
+          child.kill();
+          finish(new Error("The client disconnected."));
+          return;
+        }
+
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString("utf8");
+          if (stderr.length > 8_000) stderr = stderr.slice(-8_000);
         });
-      } else {
-        response.destroy(error);
-      }
-    });
-    process.stdout.once("data", () => {
-      responseStarted = true;
-      response.setHeader("Content-Type", download ? "audio/mpeg" : "application/octet-stream");
-      response.setHeader("Cache-Control", "no-store");
-      if (download) {
-        response.setHeader(
-          "Content-Disposition",
-          `attachment; filename="alhan-${videoId}.mp3"`,
-        );
-      }
-    });
-    process.stdout.pipe(response);
-    process.on("close", (code) => {
-      clearTimeout(timeout);
-      if (code !== 0 && !responseStarted && !response.headersSent) {
-        response.status(502).json({
-          error: timedOut
-            ? "yt-dlp audio request timed out."
-            : formatYtDlpError(
+        child.on("error", (error) => finish(error));
+        child.stdout.once("data", (firstChunk) => {
+          if (started || settled) return;
+          if (response.destroyed) {
+            child.kill();
+            finish(new Error("The client disconnected."));
+            return;
+          }
+          started = true;
+          if (timer) clearTimeout(timer);
+          settled = true;
+
+          const contentType = download
+            ? "audio/mpeg"
+            : sniffAudioContentType(firstChunk) ?? "audio/mp4";
+          response.setHeader("Content-Type", contentType);
+          response.setHeader("Cache-Control", "no-store");
+          if (download) {
+            response.setHeader(
+              "Content-Disposition",
+              `attachment; filename="alhan-${videoId}.mp3"`,
+            );
+          }
+
+          response.write(firstChunk);
+          child.stdout.pause();
+          child.stdout.pipe(response);
+          resolve();
+        });
+        child.on("close", (code) => {
+          if (started) return;
+          if (clientClosed) {
+            finish(new Error("The client disconnected."));
+            return;
+          }
+          finish(
+            new Error(
+              formatYtDlpError(
                 stderr.trim() || `yt-dlp exited with status ${code}.`,
               ),
+            ),
+          );
         });
-      }
-    });
-  }).catch((error) => {
-    clearTimeout(timeout);
-    if (!response.headersSent) {
-      response.status(502).json({
-        error: error instanceof Error ? error.message : "Could not start yt-dlp.",
-      });
-    }
+      })
+      .catch((error) => finish(error));
   });
+}
+
+async function streamYtDlp(response, videoId, download = false) {
+  let lastError = null;
+  for (const client of PLAYER_CLIENTS) {
+    if (response.destroyed || response.headersSent) return;
+    try {
+      await attemptStream(response, videoId, buildAudioArgs(videoId, client), download);
+      return;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (response.destroyed || response.headersSent) return;
+      if (
+        !/sign in to confirm|not a bot|requested format|http error 403|status 429|too many requests|timed out|no audio/i.test(
+          lastError.message,
+        )
+      ) {
+        break;
+      }
+    }
+  }
+
+  if (!response.headersSent && !response.destroyed) {
+    response.status(502).json({
+      error:
+        lastError?.message ||
+        "Could not start the audio stream. The track may be unavailable or YouTube is blocking the server.",
+    });
+  }
 }
 
 app.get("/api/stream/:videoId", (request, response) => {
@@ -460,21 +596,44 @@ app.get("/api/stream/:videoId", (request, response) => {
   }
 
   setStreamCorsHeaders(request, response);
-  streamYtDlp(
-    response,
-    videoId,
-    [
-      "--quiet",
-      "--no-warnings",
-      "--no-playlist",
-      "-f",
-      "bestaudio[ext=m4a]/bestaudio",
-      "-o",
-      "-",
-      `https://www.youtube.com/watch?v=${videoId}`,
-    ],
-  );
+  void streamYtDlp(response, videoId);
 });
+
+async function runYtDlpWithClientFallback(videoId, outputTemplate) {
+  let lastError = null;
+  for (const client of PLAYER_CLIENTS) {
+    try {
+      return await runYtDlp(
+        [
+          ...getYtDlpCommonArgs(),
+          "--quiet",
+          "--extract-audio",
+          "--audio-format",
+          "mp3",
+          "--audio-quality",
+          "0",
+          ...(client
+            ? ["--extractor-args", `youtube:player_client=${client}`]
+            : []),
+          "-o",
+          outputTemplate,
+          `https://www.youtube.com/watch?v=${videoId}`,
+        ],
+        180_000,
+      );
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (
+        !/sign in to confirm|not a bot|requested format|http error 403|status 429|too many requests|timed out/i.test(
+          lastError.message,
+        )
+      ) {
+        throw lastError;
+      }
+    }
+  }
+  throw lastError ?? new Error("yt-dlp could not create the MP3 download.");
+}
 
 app.get("/api/download", (request, response) => {
   const videoId = String(request.query.id ?? "");
@@ -489,19 +648,7 @@ app.get("/api/download", (request, response) => {
     try {
       tempDirectory = await mkdtemp(path.join(os.tmpdir(), "alhan-dj-"));
       const outputTemplate = path.join(tempDirectory, "%(id)s.%(ext)s");
-      const output = await runYtDlp([
-        "--quiet",
-        "--no-warnings",
-        "--no-playlist",
-        "--extract-audio",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        "0",
-        "-o",
-        outputTemplate,
-        `https://www.youtube.com/watch?v=${videoId}`,
-      ], 180_000);
+      const output = await runYtDlpWithClientFallback(videoId, outputTemplate);
       void output;
 
       const files = await readdir(tempDirectory);
@@ -544,7 +691,7 @@ app.get("/api/download", (request, response) => {
 
 registerAiDjRoutes(app);
 
-void ensureYtDlp()
+void Promise.all([ensureYtDlp(), ensureCookiesFile()])
   .catch((error) => {
     console.error(
       error instanceof Error ? error.message : "yt-dlp bootstrap failed.",

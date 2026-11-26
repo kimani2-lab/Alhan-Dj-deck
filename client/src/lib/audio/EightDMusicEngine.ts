@@ -1,7 +1,13 @@
 import {
   LargeHall8DEngine,
   type HallSize,
-} from "./LargeHall8DEngine";
+} from "./LargeHall8DEngine.ts";
+import {
+  createBassEnhancement,
+  type BassEnhancement,
+} from "./bassEnhancement.ts";
+import { detectBpm, orbitSpeedForBpm } from "./bpm.ts";
+import { fetchAudioBuffer } from "./loadAudioBuffer.ts";
 
 export type EightDMusicSnapshot = {
   title: string;
@@ -12,9 +18,12 @@ export type EightDMusicSnapshot = {
   position: number;
   isPlaying: boolean;
   volume: number;
+  bpm: number;
   bassBoost: boolean;
+  trebleMuted: boolean;
   spatial: {
     enabled: boolean;
+    beatSynced: boolean;
     speed: number;
     depth: number;
     room: number;
@@ -28,9 +37,11 @@ export class EightDMusicEngine {
   readonly analyser: AnalyserNode;
   private readonly context: AudioContext;
   private readonly sourceOutput: GainNode;
+  private readonly trebleFilter: BiquadFilterNode;
   private readonly bassFilter: BiquadFilterNode;
   private readonly compressor: DynamicsCompressorNode;
   private readonly spatialEngine: LargeHall8DEngine;
+  private readonly bassEnhancement: BassEnhancement;
   private source: AudioBufferSourceNode | null = null;
   private buffer: AudioBuffer | null = null;
   private title = "No track loaded";
@@ -41,10 +52,13 @@ export class EightDMusicEngine {
   private startedAt = 0;
   private playing = false;
   private bassBoost = false;
+  private trebleMuted = false;
   private volume = 0.82;
+  private bpm = 120;
   private spatialEnabled = true;
   private spatialSpeed = 0.12;
   private spatialDepth = 0.75;
+  private spatialBeatSync = true;
   private room = 0.44;
   private hallSize: HallSize = "hall";
   private phase = 0;
@@ -58,6 +72,10 @@ export class EightDMusicEngine {
     this.analyser.smoothingTimeConstant = 0.82;
     this.sourceOutput = context.createGain();
     this.sourceOutput.gain.value = this.volume;
+    this.trebleFilter = context.createBiquadFilter();
+    this.trebleFilter.type = "highshelf";
+    this.trebleFilter.frequency.value = 4_000;
+    this.trebleFilter.gain.value = 0;
     this.bassFilter = context.createBiquadFilter();
     this.bassFilter.type = "lowshelf";
     this.bassFilter.frequency.value = 120;
@@ -73,10 +91,17 @@ export class EightDMusicEngine {
     this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
     this.spatialEngine.setRoom(this.room);
     this.spatialEngine.setHallSize(this.hallSize);
+    this.spatialEngine.setEnabled(this.spatialEnabled);
+    this.bassEnhancement = createBassEnhancement(
+      context,
+      this.bassFilter,
+      this.spatialEngine.input,
+    );
 
-    this.sourceOutput.connect(this.bassFilter);
-    this.bassFilter.connect(this.compressor);
-    this.compressor.connect(this.spatialEngine.input);
+    this.sourceOutput.connect(this.trebleFilter);
+    this.trebleFilter.connect(this.compressor);
+    this.compressor.connect(this.bassFilter);
+    this.bassFilter.connect(this.spatialEngine.input);
     this.spatialEngine.output.connect(this.analyser);
     this.analyser.connect(masterInput);
   }
@@ -91,11 +116,13 @@ export class EightDMusicEngine {
     metadata: { id: string; channelTitle: string; thumbnail: string },
   ): Promise<void> {
     await this.resume();
-    const response = await fetch(url, { mode: "cors", credentials: "omit" });
-    if (!response.ok) throw new Error(`Audio request failed (${response.status}).`);
-    const buffer = await this.context.decodeAudioData(await response.arrayBuffer());
+    const buffer = await fetchAudioBuffer(this.context, url);
     this.pause();
     this.buffer = buffer;
+    this.bpm = detectBpm(buffer);
+    this.spatialBeatSync = true;
+    this.spatialSpeed = orbitSpeedForBpm(this.bpm);
+    this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
     this.title = title;
     this.trackId = metadata.id;
     this.channelTitle = metadata.channelTitle;
@@ -161,11 +188,26 @@ export class EightDMusicEngine {
 
   setSpatialEnabled(enabled: boolean): void {
     this.spatialEnabled = enabled;
+    this.spatialEngine.setEnabled(enabled);
   }
 
   setSpatialSpeed(value: number): void {
-    this.spatialSpeed = Math.min(0.3, Math.max(0.04, value));
+    this.spatialBeatSync = false;
+    this.spatialSpeed = Math.min(1, Math.max(0.04, value));
     this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
+  }
+
+  setSpatialSpeedManual(value: number): void {
+    this.setSpatialSpeed(value);
+  }
+
+  setBpm(bpm: number): void {
+    if (!Number.isFinite(bpm) || bpm <= 0) return;
+    this.bpm = Math.min(200, Math.max(60, bpm));
+    if (this.spatialBeatSync) {
+      this.spatialSpeed = orbitSpeedForBpm(this.bpm);
+      this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
+    }
   }
 
   setSpatialDepth(value: number): void {
@@ -185,8 +227,24 @@ export class EightDMusicEngine {
 
   setBassBoost(enabled: boolean): void {
     this.bassBoost = enabled;
-    this.bassFilter.gain.setTargetAtTime(
-      enabled ? 7 : 0,
+    const now = this.context.currentTime;
+    this.bassFilter.gain.setTargetAtTime(enabled ? 10 : 0, now, 0.02);
+    this.bassEnhancement.subGain.gain.setTargetAtTime(
+      enabled ? 1.4 : 0,
+      now,
+      0.05,
+    );
+    this.bassEnhancement.harmonicGain.gain.setTargetAtTime(
+      enabled ? 0.65 : 0,
+      now,
+      0.05,
+    );
+  }
+
+  setTrebleMuted(muted: boolean): void {
+    this.trebleMuted = muted;
+    this.trebleFilter.gain.setTargetAtTime(
+      muted ? -24 : 0,
       this.context.currentTime,
       0.02,
     );
@@ -211,11 +269,9 @@ export class EightDMusicEngine {
 
   getSnapshot(): EightDMusicSnapshot {
     const elapsed = this.position;
-    if (this.spatialEnabled) {
-      this.phase += Math.min(0.02, (this.context.currentTime - this.startedAt) * 0.02);
-    }
+    this.phase = this.spatialEngine.phase;
     this.pan = this.spatialEnabled
-      ? Math.sin(this.phase * Math.PI * 2 * this.spatialSpeed) * this.spatialDepth
+      ? Math.sin(this.phase) * this.spatialDepth
       : 0;
     return {
       title: this.title,
@@ -226,9 +282,12 @@ export class EightDMusicEngine {
       position: elapsed,
       isPlaying: this.playing,
       volume: this.volume,
+      bpm: this.bpm,
       bassBoost: this.bassBoost,
+      trebleMuted: this.trebleMuted,
       spatial: {
         enabled: this.spatialEnabled,
+        beatSynced: this.spatialBeatSync,
         speed: this.spatialSpeed,
         depth: this.spatialDepth,
         room: this.room,
@@ -242,7 +301,9 @@ export class EightDMusicEngine {
   dispose(): void {
     this.pause();
     this.sourceOutput.disconnect();
+    this.trebleFilter.disconnect();
     this.bassFilter.disconnect();
+    this.bassEnhancement.dispose();
     this.compressor.disconnect();
     this.spatialEngine.dispose();
     this.analyser.disconnect();

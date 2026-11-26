@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -19,6 +19,7 @@ RUN npm install --omit=dev
 
 ENV NODE_ENV=production
 ENV PORT=5000
+ENV YT_DLP_JS_RUNTIME=node
 EXPOSE 5000
 
 CMD ["npm", "run", "start"]

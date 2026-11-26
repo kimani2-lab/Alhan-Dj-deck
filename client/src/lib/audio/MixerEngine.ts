@@ -1,4 +1,5 @@
 import { Deck, type DeckId } from "./Deck";
+import { fetchAudioBuffer } from "./loadAudioBuffer";
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -112,13 +113,7 @@ export class MixerEngine {
     title: string,
     metadata?: { id: string; channelTitle: string; thumbnail: string },
   ): Promise<void> {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Audio request failed (${response.status}).`);
-    }
-    const buffer = await this.context.decodeAudioData(
-      await response.arrayBuffer(),
-    );
+    const buffer = await fetchAudioBuffer(this.context, url);
     await this.getDeck(id).load(buffer, title, metadata);
   }
 
