@@ -69,6 +69,8 @@ The client plays YouTube audio through `GET /api/stream/:videoId`. The server re
 
 On cloud/datacenter hosts (Render, Railway, VPS, etc.) YouTube may answer `yt-dlp` with `Sign in to confirm you're not a bot`. The backend logs whether cookies were passed and the exact `yt-dlp` stderr on extraction failures; bot-check failures are not retried in a tight loop.
 
+Audio resolution prefers `ba[ext=m4a]/ba[ext=webm]/ba/b/best`. If yt-dlp reports `Requested format is not available`, the server retries that request once with `ba/b/best` and `--no-check-formats`; logs include the selector, resulting extension, and retry status.
+
 If songs still fail on your host, the IP is being challenged. In order of reliability:
 
 1. Provide signed-in YouTube cookies. Export a Netscape-format `cookies.txt` from a browser where you are logged in, Base64-encode it, and set `YOUTUBE_COOKIES_BASE64`. The server writes it to `/tmp/yt-cookies.txt` with mode `0600` at startup. Existing deployments can also use `YT_DLP_COOKIES_FILE` or `YT_DLP_COOKIES`.

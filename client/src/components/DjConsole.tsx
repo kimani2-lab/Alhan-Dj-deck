@@ -86,6 +86,7 @@ const BOT_ACTIVATED_KEY = "alhanBotActivated";
 type LocalTrack = { file: File; id: string };
 type DragState = { id: DeckId; x: number; tempo: number; position: number };
 type AppMode = "home" | "dj" | "music" | "settings" | "about";
+type MediaPlaybackSource = "eightD" | "deckA" | "deckB";
 
 
 const formatTime = (seconds: number) => {
@@ -341,6 +342,7 @@ function DeckPanel({
   snapshot,
   accent,
   onChange,
+  onActivatePlayback,
   onDropFile,
 }: {
   id: DeckId;
@@ -348,6 +350,7 @@ function DeckPanel({
   snapshot: DeckSnapshot;
   accent: string;
   onChange: () => void;
+  onActivatePlayback: (id: DeckId) => void;
   onDropFile: (id: DeckId, file: File) => void;
 }) {
   const [range, setRange] = useState(8);
@@ -502,6 +505,7 @@ function DeckPanel({
               title={snapshot.isPlaying ? "Pause" : "Play"}
               onClick={() => {
                 if (!engine) return;
+                onActivatePlayback(id);
                 void engine.resume().then(() => {
                   deck?.togglePlayback();
                   onChange();
@@ -709,6 +713,9 @@ function DeckPanel({
 
 export default function DjConsole() {
   const engineRef = useRef<MixerEngine | null>(null);
+  const activeMediaSourceRef = useRef<MediaPlaybackSource>("eightD");
+  const [activeMediaSource, setActiveMediaSource] =
+    useState<MediaPlaybackSource>("eightD");
   const [engine, setEngine] = useState<MixerEngine | null>(null);
   const [eightDEngine, setEightDEngine] = useState<EightDMusicEngine | null>(null);
   const eightDEngineRef = useRef<EightDMusicEngine | null>(null);
@@ -879,6 +886,113 @@ export default function DjConsole() {
     const eightD = eightDEngineRef.current;
     if (eightD) setEightDSnapshot(eightD.getSnapshot());
   }, []);
+  const activateMediaSource = useCallback((source: MediaPlaybackSource) => {
+    activeMediaSourceRef.current = source;
+    setActiveMediaSource(source);
+  }, []);
+
+  const mediaSessionActionsRef = useRef({
+    play: () => {},
+    pause: () => {},
+  });
+  useEffect(() => {
+    mediaSessionActionsRef.current = {
+      play: () => {
+        const mixer = engineRef.current;
+        if (!mixer) return;
+        const source = activeMediaSourceRef.current;
+        void mixer
+          .resume()
+          .then(() => {
+            if (source === "eightD") eightDEngineRef.current?.play();
+            else mixer.getDeck(source === "deckA" ? "A" : "B").play();
+            refresh();
+          })
+          .catch((reason: unknown) => {
+            setError(
+              reason instanceof Error
+                ? reason.message
+                : "Could not resume playback from the headphone controls.",
+            );
+          });
+      },
+      pause: () => {
+        const source = activeMediaSourceRef.current;
+        if (source === "eightD") eightDEngineRef.current?.pause();
+        else engineRef.current?.getDeck(source === "deckA" ? "A" : "B").pause();
+        refresh();
+      },
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    const session = navigator.mediaSession;
+    const playHandler = () => mediaSessionActionsRef.current.play();
+    const pauseHandler = () => mediaSessionActionsRef.current.pause();
+    const register = (
+      action: "play" | "pause",
+      handler: MediaSessionActionHandler | null,
+    ) => {
+      try {
+        session.setActionHandler(action, handler);
+      } catch (reason) {
+        if (reason instanceof Error && reason.name === "NotSupportedError") {
+          return;
+        }
+        console.warn(
+          `[media-session] Could not register the ${action} action.`,
+          reason,
+        );
+      }
+    };
+
+    register("play", playHandler);
+    register("pause", pauseHandler);
+    return () => {
+      register("play", null);
+      register("pause", null);
+      session.metadata = null;
+      session.playbackState = "none";
+    };
+  }, []);
+
+  const activeMediaSnapshot =
+    activeMediaSource === "eightD"
+      ? eightDSnapshot
+      : snapshots[activeMediaSource === "deckA" ? "A" : "B"];
+  const mediaTrackId = activeMediaSnapshot?.trackId;
+  const mediaTitle = activeMediaSnapshot?.title;
+  const mediaArtist = activeMediaSnapshot?.channelTitle;
+  const mediaArtwork = activeMediaSnapshot?.thumbnail;
+  const mediaIsPlaying = activeMediaSnapshot?.isPlaying ?? false;
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    const session = navigator.mediaSession;
+    if (!mediaTrackId || !mediaTitle) {
+      session.metadata = null;
+      session.playbackState = "none";
+      return;
+    }
+
+    if (typeof MediaMetadata !== "undefined") {
+      session.metadata = new MediaMetadata({
+        title: mediaTitle,
+        artist: mediaArtist ?? "ALHAN DJ",
+        album: "ALHAN DJ",
+        artwork: mediaArtwork ? [{ src: mediaArtwork }] : [],
+      });
+    }
+    session.playbackState = mediaIsPlaying ? "playing" : "paused";
+  }, [
+    activeMediaSource,
+    mediaArtist,
+    mediaArtwork,
+    mediaIsPlaying,
+    mediaTitle,
+    mediaTrackId,
+  ]);
 
   const refreshEcosystemQueue = useCallback(() => {
     setEcosystemQueue(queueManager.getSnapshot());
@@ -1013,6 +1127,7 @@ export default function DjConsole() {
     try {
       await mixer.resume();
       await mixer.loadFile(id, track.file);
+      activateMediaSource(id === "A" ? "deckA" : "deckB");
       refresh();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not decode the audio file.");
@@ -1037,6 +1152,7 @@ export default function DjConsole() {
             duration: track.duration ?? undefined,
           },
         );
+        activateMediaSource("eightD");
         recordTastePlay(track);
         eightD.play();
         setEightDSnapshot(eightD.getSnapshot());
@@ -1053,7 +1169,7 @@ export default function DjConsole() {
         setLoadingId(null);
       }
     },
-    [recordTastePlay],
+    [activateMediaSource, recordTastePlay],
   );
 
   const searchRequestRef = useRef(0);
@@ -1329,6 +1445,7 @@ export default function DjConsole() {
           duration: track.duration ?? undefined,
         },
       );
+      activateMediaSource(id === "A" ? "deckA" : "deckB");
       recordTastePlay(track);
       refresh();
       return true;
@@ -1342,7 +1459,7 @@ export default function DjConsole() {
     } finally {
       setLoadingId(null);
     }
-  }, [recordTastePlay, refresh]);
+  }, [activateMediaSource, recordTastePlay, refresh]);
 
   const loadToDeck = useCallback(
     async (id: DeckId, track: TrackResult) => {
@@ -2213,6 +2330,7 @@ export default function DjConsole() {
                   onClick={() => {
                     if (!engine) return;
                     void engine.resume().then(() => {
+                      activateMediaSource("deckA");
                       engine.deckA.togglePlayback();
                       refresh();
                     });
@@ -2269,6 +2387,9 @@ export default function DjConsole() {
             snapshot={snapshots.A}
             accent="#32d6cb"
             onChange={refresh}
+            onActivatePlayback={(id) =>
+              activateMediaSource(id === "A" ? "deckA" : "deckB")
+            }
             onDropFile={(id, file) => {
               void loadLocalTrack(id, { file, id: `${file.name}-${file.lastModified}` });
             }}
@@ -2337,6 +2458,9 @@ export default function DjConsole() {
             snapshot={snapshots.B}
             accent="#f184b8"
             onChange={refresh}
+            onActivatePlayback={(id) =>
+              activateMediaSource(id === "A" ? "deckA" : "deckB")
+            }
             onDropFile={(id, file) => {
               void loadLocalTrack(id, { file, id: `${file.name}-${file.lastModified}` });
             }}
@@ -2374,6 +2498,7 @@ export default function DjConsole() {
           searching={searching}
           loadingId={loadingId}
           onPlayTrack={playTrackIn8D}
+          onActivatePlayback={() => activateMediaSource("eightD")}
           ecosystemQueue={ecosystemQueue}
           onSeedTrack={seedEcosystem}
           onClearSeed={clearEcosystem}

@@ -210,6 +210,7 @@ export default function MusicPlayerMode({
   loadingId,
   ecosystemQueue,
   onPlayTrack,
+  onActivatePlayback,
   onSeedTrack,
   onClearSeed,
   onNextTrack,
@@ -234,6 +235,7 @@ export default function MusicPlayerMode({
   loadingId: string | null;
   ecosystemQueue: EcosystemQueueSnapshot;
   onPlayTrack: (track: TrackResult) => Promise<void>;
+  onActivatePlayback: () => void;
   onSeedTrack: (track: TrackResult) => void;
   onClearSeed: () => void;
   onNextTrack: () => void;
@@ -274,6 +276,7 @@ export default function MusicPlayerMode({
 
   const togglePlayback = () => {
     if (!eightDEngine) return;
+    onActivatePlayback();
     void eightDEngine.resume().then(() => {
       eightDEngine.togglePlayback();
       onDeckChange();

@@ -13,6 +13,12 @@ import {
   parseResolvedStreamUrl,
   StreamUrlCache,
 } from "./streamUrlCache.js";
+import {
+  AUDIO_FALLBACK_FORMAT,
+  AUDIO_FIRST_FORMAT,
+  isRequestedFormatUnavailable,
+  runWithAudioFormatFallback,
+} from "./ytDlpFormats.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 5000);
@@ -217,10 +223,14 @@ function logYtDlpAttempt(operation, args) {
   const clientSetting =
     extractorArgsIndex >= 0 ? args[extractorArgsIndex + 1] : null;
   const client = clientSetting?.match(/player_client=([^&]+)/)?.[1] ?? "default";
+  const formatIndex = args.findIndex(
+    (argument) => argument === "-f" || argument === "--format",
+  );
+  const format = formatIndex >= 0 ? args[formatIndex + 1] : "default";
   console.info(
     `[yt-dlp] ${operation} attempt; --cookies ${
       args.includes("--cookies") ? "passed" : "not passed"
-    }; player_client=${client}.`,
+    }; player_client=${client}; format=${format}.`,
   );
 }
 
@@ -230,6 +240,10 @@ function logYtDlpFailure(operation, stderr) {
       stderr || "(empty stderr)"
     }`,
   );
+}
+
+function getYtDlpFailureStatus(error) {
+  return isRequestedFormatUnavailable(error) ? 500 : 502;
 }
 
 function setStreamCorsHeaders(request, response) {
@@ -579,15 +593,44 @@ async function resolveStreamUrl(videoId) {
       "--no-playlist",
       "--no-check-certificates",
       "-f",
-      "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+      AUDIO_FIRST_FORMAT,
       "--get-url",
       `https://www.youtube.com/watch?v=${videoId}`,
     ];
-    const output = await runYtDlp(args, 30_000, "stream-resolve");
+    let formatFallbackUsed = false;
+    const output = await runWithAudioFormatFallback(
+      args,
+      (attemptArgs, isFallback) =>
+        runYtDlp(
+          attemptArgs,
+          30_000,
+          isFallback ? "stream-resolve-format-fallback" : "stream-resolve",
+        ),
+      () => {
+        formatFallbackUsed = true;
+        console.warn(
+          `[yt-dlp] stream-resolve format unavailable for ${videoId}; retry=1/1; selector=${AUDIO_FALLBACK_FORMAT}; --no-check-formats enabled.`,
+        );
+      },
+    );
     const streamUrl = parseResolvedStreamUrl(output);
+    const metadata = getResolvedStreamMetadata(streamUrl);
+    const extension =
+      metadata.mimeType === "audio/webm"
+        ? "webm"
+        : metadata.mimeType === "audio/mp4"
+          ? "m4a"
+          : metadata.mimeType === "audio/mpeg"
+            ? "mp3"
+            : "unknown";
+    console.info(
+      `[yt-dlp] stream-resolve selected audio; format=${
+        formatFallbackUsed ? AUDIO_FALLBACK_FORMAT : AUDIO_FIRST_FORMAT
+      }; extension=${extension}; mime=${metadata.mimeType}; retry=${formatFallbackUsed ? "fallback" : "none"}.`,
+    );
     return streamUrlCache.set(videoId, {
       streamUrl,
-      ...getResolvedStreamMetadata(streamUrl),
+      ...metadata,
     });
   })();
 
@@ -735,7 +778,7 @@ app.post("/api/stream/prefetch", async (request, response) => {
         error instanceof Error ? error.message : "unknown error"
       }`,
     );
-    response.status(502).json({
+    response.status(getYtDlpFailureStatus(error)).json({
       error:
         error instanceof Error
           ? error.message
@@ -772,7 +815,7 @@ app.get("/api/stream/:videoId", (request, response) => {
       }`,
     );
     if (!response.headersSent && !response.destroyed) {
-      response.status(502).json({
+      response.status(getYtDlpFailureStatus(error)).json({
         error:
           error instanceof Error
             ? error.message
@@ -786,30 +829,51 @@ app.get("/api/stream/:videoId", (request, response) => {
 
 async function runYtDlpWithClientFallback(videoId, outputTemplate) {
   let lastError = null;
+  let formatFallbackUsed = false;
   for (const client of PLAYER_CLIENTS) {
     try {
-      return await runYtDlp(
-        [
-          ...getYtDlpBaseArgs(),
-          ...getYtDlpCommonArgs(),
-          "--quiet",
-          "--extract-audio",
-          "--audio-format",
-          "mp3",
-          "--audio-quality",
-          "0",
-          ...(client
-            ? ["--extractor-args", `youtube:player_client=${client}`]
-            : []),
-          "-o",
-          outputTemplate,
-          `https://www.youtube.com/watch?v=${videoId}`,
-        ],
-        180_000,
-        "download",
+      const args = [
+        ...getYtDlpBaseArgs(),
+        ...getYtDlpCommonArgs(),
+        "--quiet",
+        "-f",
+        AUDIO_FIRST_FORMAT,
+        "--extract-audio",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        "0",
+        ...(client
+          ? ["--extractor-args", `youtube:player_client=${client}`]
+          : []),
+        "-o",
+        outputTemplate,
+        `https://www.youtube.com/watch?v=${videoId}`,
+      ];
+      const output = await runWithAudioFormatFallback(
+        args,
+        (attemptArgs, isFallback) =>
+          runYtDlp(
+            attemptArgs,
+            180_000,
+            isFallback ? "download-format-fallback" : "download",
+          ),
+        () => {
+          formatFallbackUsed = true;
+          console.warn(
+            `[yt-dlp] download format unavailable for ${videoId}; retry=1/1; selector=${AUDIO_FALLBACK_FORMAT}; --no-check-formats enabled.`,
+          );
+        },
       );
+      console.info(
+        `[yt-dlp] download selected audio; format=${
+          formatFallbackUsed ? AUDIO_FALLBACK_FORMAT : AUDIO_FIRST_FORMAT
+        }; extension=mp3; retry=${formatFallbackUsed ? "fallback" : "none"}.`,
+      );
+      return output;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      if (formatFallbackUsed) break;
       if (
         /sign in to confirm|not a bot|http error 403|status 429|too many requests/i.test(
           lastError.message,
@@ -876,7 +940,7 @@ app.get("/api/download", (request, response) => {
         await rm(tempDirectory, { recursive: true, force: true });
       }
       if (!response.headersSent) {
-        response.status(502).json({
+        response.status(getYtDlpFailureStatus(error)).json({
           error: error instanceof Error ? error.message : "Could not create the MP3 download.",
         });
       } else {
