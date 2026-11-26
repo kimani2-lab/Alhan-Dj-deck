@@ -102,3 +102,70 @@ export function detectBpm(buffer: AudioBuffer): number {
   const bpm = 60 / (bestLag * hopSeconds);
   return Math.round(clamp(bpm, 60, 200));
 }
+
+export class LiveBpmTracker {
+  private previousSpectrum: Uint8Array | null = null;
+  private readonly fluxHistory: number[] = [];
+  private readonly onsetTimes: number[] = [];
+  private lastOnsetAt = Number.NEGATIVE_INFINITY;
+
+  reset(): void {
+    this.previousSpectrum = null;
+    this.fluxHistory.length = 0;
+    this.onsetTimes.length = 0;
+    this.lastOnsetAt = Number.NEGATIVE_INFINITY;
+  }
+
+  update(analyser: AnalyserNode, timeSeconds: number): number | null {
+    const binCount = analyser.frequencyBinCount;
+    if (
+      binCount < 2 ||
+      typeof analyser.getByteFrequencyData !== "function" ||
+      !Number.isFinite(timeSeconds)
+    ) {
+      return null;
+    }
+
+    const spectrum = new Uint8Array(binCount);
+    analyser.getByteFrequencyData(spectrum);
+    const binHz = analyser.context.sampleRate / analyser.fftSize;
+    const firstBin = Math.max(1, Math.floor(35 / binHz));
+    const lastBin = Math.min(binCount - 1, Math.ceil(160 / binHz));
+    let flux = 0;
+    for (let bin = firstBin; bin <= lastBin; bin += 1) {
+      flux += Math.max(
+        0,
+        spectrum[bin] - (this.previousSpectrum?.[bin] ?? 0),
+      );
+    }
+
+    const baseline =
+      this.fluxHistory.length === 0
+        ? 0
+        : this.fluxHistory.reduce((sum, value) => sum + value, 0) /
+          this.fluxHistory.length;
+    const isOnset =
+      flux > Math.max(4, baseline * 1.5) &&
+      timeSeconds - this.lastOnsetAt >= 0.28;
+    this.fluxHistory.push(flux);
+    if (this.fluxHistory.length > 20) this.fluxHistory.shift();
+    this.previousSpectrum = spectrum;
+
+    if (isOnset) {
+      this.lastOnsetAt = timeSeconds;
+      this.onsetTimes.push(timeSeconds);
+      if (this.onsetTimes.length > 10) this.onsetTimes.shift();
+    }
+    if (this.onsetTimes.length < 4) return null;
+
+    const intervals = this.onsetTimes
+      .slice(1)
+      .map((time, index) => time - (this.onsetTimes[index] ?? time))
+      .filter((interval) => interval >= 0.28 && interval <= 1.1)
+      .sort((left, right) => left - right);
+    if (intervals.length < 3) return null;
+
+    const median = intervals[Math.floor(intervals.length / 2)];
+    return Math.round(clamp(60 / median, 60, 200));
+  }
+}

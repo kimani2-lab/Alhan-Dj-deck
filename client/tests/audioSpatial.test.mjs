@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHallImpulseResponse } from "../src/lib/audio/Deck.ts";
 import { EightDMusicEngine } from "../src/lib/audio/EightDMusicEngine.ts";
-import { detectBpm, orbitSpeedForBpm } from "../src/lib/audio/bpm.ts";
+import {
+  detectBpm,
+  LiveBpmTracker,
+  orbitSpeedForBpm,
+} from "../src/lib/audio/bpm.ts";
 
 class FakeParam {
   value = 0;
@@ -31,6 +35,7 @@ class FakeNode {
 class FakeAudioContext {
   currentTime = 0;
   sampleRate = 8_000;
+  mediaElementSources = [];
 
   createGain() {
     return Object.assign(new FakeNode(), { gain: new FakeParam() });
@@ -41,6 +46,12 @@ class FakeAudioContext {
       fftSize: 0,
       smoothingTimeConstant: 0,
     });
+  }
+
+  createMediaElementSource(element) {
+    const source = Object.assign(new FakeNode(), { mediaElement: element });
+    this.mediaElementSources.push(source);
+    return source;
   }
 
   createBiquadFilter() {
@@ -113,6 +124,43 @@ class FakeAudioContext {
       sampleRate,
       getChannelData: (channel) => channels[channel],
     };
+  }
+}
+
+class FakeAudioElement {
+  crossOrigin = null;
+  preload = "";
+  src = "";
+  currentTime = 0;
+  duration = Number.NaN;
+  playbackRate = 1;
+  paused = true;
+  error = null;
+  listeners = new Map();
+
+  addEventListener(name, callback) {
+    const callbacks = this.listeners.get(name) ?? [];
+    callbacks.push(callback);
+    this.listeners.set(name, callbacks);
+  }
+
+  removeAttribute(name) {
+    if (name === "src") this.src = "";
+  }
+
+  load() {}
+
+  play() {
+    this.paused = false;
+    return Promise.resolve();
+  }
+
+  pause() {
+    this.paused = true;
+  }
+
+  emit(name) {
+    for (const callback of this.listeners.get(name) ?? []) callback();
   }
 }
 
@@ -247,4 +295,124 @@ test("detects tempo and maps faster beats to faster full orbits", () => {
 
   assert.ok(Math.abs(bpm - 120) <= 8);
   assert.ok(orbitSpeedForBpm(160) > orbitSpeedForBpm(90));
+});
+
+test("tracks streamed beat onsets without decoding the full audio", () => {
+  const tracker = new LiveBpmTracker();
+  const spectrum = new Uint8Array(64);
+  const analyser = {
+    frequencyBinCount: spectrum.length,
+    fftSize: 256,
+    context: { sampleRate: 8_000 },
+    getByteFrequencyData(target) {
+      target.set(spectrum);
+    },
+  };
+  let detectedBpm = null;
+
+  for (let frame = 0; frame <= 100; frame += 1) {
+    spectrum.fill(0);
+    if (frame % 5 === 0) {
+      for (let bin = 1; bin <= 6; bin += 1) spectrum[bin] = 120;
+    }
+    detectedBpm =
+      tracker.update(analyser, frame / 10) ?? detectedBpm;
+  }
+
+  assert.equal(detectedBpm, 120);
+});
+
+test("loads a remote deck track through a progressive media element", async () => {
+  const originalAudio = globalThis.Audio;
+  globalThis.Audio = FakeAudioElement;
+  try {
+    const context = new FakeAudioContext();
+    const { Deck } = await import("../src/lib/audio/Deck.ts");
+    const deck = new Deck(context, "A");
+    await deck.loadStream("/api/stream/abcdefghijk", "Streaming track", {
+      id: "abcdefghijk",
+      channelTitle: "Artist",
+      thumbnail: "",
+      duration: 210,
+    });
+
+    deck.play();
+    await Promise.resolve();
+    const element = context.mediaElementSources[0]?.mediaElement;
+    assert.ok(element);
+    assert.equal(element.crossOrigin, "anonymous");
+    assert.equal(element.preload, "auto");
+    assert.equal(element.src, "/api/stream/abcdefghijk");
+    assert.equal(deck.audioBuffer, null);
+    assert.equal(deck.getSnapshot().duration, 210);
+    assert.equal(deck.getSnapshot().isPlaying, true);
+
+    element.duration = 180;
+    assert.equal(deck.getSnapshot().duration, 180);
+    element.currentTime = 12;
+    deck.seek(42);
+    deck.setTempo(5);
+    assert.equal(element.currentTime, 42);
+    assert.equal(element.playbackRate, 1.05);
+
+    deck.seek(10);
+    deck.setLoopIn();
+    deck.seek(20);
+    deck.setLoopOut();
+    deck.setLoopEnabled(true);
+    element.currentTime = 20;
+    element.emit("timeupdate");
+    assert.equal(element.currentTime, 10);
+
+    await deck.loadStream("/api/stream/lmnopqrstuv", "Next track", {
+      id: "lmnopqrstuv",
+      channelTitle: "Artist",
+      thumbnail: "",
+      duration: 150,
+    });
+    assert.equal(context.mediaElementSources.length, 1);
+    assert.equal(element.src, "/api/stream/lmnopqrstuv");
+    const localBuffer = context.createBuffer(1, 8_000, 8_000);
+    await deck.load(localBuffer, "Local file");
+    assert.equal(deck.audioBuffer, localBuffer);
+    assert.equal(element.src, "");
+
+    deck.dispose();
+  } finally {
+    if (originalAudio === undefined) delete globalThis.Audio;
+    else globalThis.Audio = originalAudio;
+  }
+});
+
+test("routes 8D streaming through its existing effects graph", async () => {
+  const originalAudio = globalThis.Audio;
+  globalThis.Audio = FakeAudioElement;
+  try {
+    const context = new FakeAudioContext();
+    const engine = new EightDMusicEngine(context, new FakeNode());
+    await engine.loadUrl("/api/stream/abcdefghijk", "Streaming 8D track", {
+      id: "abcdefghijk",
+      channelTitle: "Artist",
+      thumbnail: "",
+      duration: 210,
+    });
+    engine.play();
+    await Promise.resolve();
+
+    const element = context.mediaElementSources[0]?.mediaElement;
+    assert.ok(element);
+    assert.equal(element.crossOrigin, "anonymous");
+    assert.equal(element.preload, "auto");
+    assert.equal(element.src, "/api/stream/abcdefghijk");
+    assert.equal(engine.getSnapshot().duration, 210);
+    element.duration = 180;
+    assert.equal(engine.getSnapshot().duration, 180);
+    assert.equal(engine.getSnapshot().isPlaying, true);
+    assert.ok(context.mediaElementSources[0].connections.includes(engine.sourceOutput));
+
+    engine.dispose();
+  } finally {
+    if (originalAudio === undefined) delete globalThis.Audio;
+    else globalThis.Audio = originalAudio;
+  }
 });

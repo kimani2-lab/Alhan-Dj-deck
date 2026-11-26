@@ -794,6 +794,7 @@ export default function DjConsole() {
   }>({ items: [], index: -1, active: false });
   const explicitEcosystemSeedRef = useRef<string | null>(null);
   const autoPlayClearedTrackRef = useRef<{ trackId: string | null } | null>(null);
+  const prefetchedNextTrackRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!mobileNavOpen) return;
@@ -836,6 +837,10 @@ export default function DjConsole() {
       mixer.context,
       mixer.masterInput,
     );
+    const reportPlaybackError = (reason: Error) => setError(reason.message);
+    mixer.deckA.setOnPlaybackError(reportPlaybackError);
+    mixer.deckB.setOnPlaybackError(reportPlaybackError);
+    eightD.setOnPlaybackError(reportPlaybackError);
     eightDEngineRef.current = eightD;
     engineRef.current = mixer;
     let isReady = false;
@@ -878,6 +883,50 @@ export default function DjConsole() {
   const refreshEcosystemQueue = useCallback(() => {
     setEcosystemQueue(queueManager.getSnapshot());
   }, [queueManager]);
+
+  useEffect(() => {
+    const activePlayback = eightDSnapshot?.isPlaying
+      ? eightDSnapshot
+      : snapshots.A;
+    if (
+      !activePlayback.trackId ||
+      !activePlayback.isPlaying ||
+      activePlayback.duration <= 0
+    ) {
+      return;
+    }
+
+    const remaining = activePlayback.duration - activePlayback.position;
+    if (
+      activePlayback.position < activePlayback.duration * 0.5 &&
+      remaining > 20
+    ) {
+      return;
+    }
+
+    const nextTrack = queueManager.peekNext(genreFilter);
+    if (!nextTrack) return;
+    const prefetchKey = `${activePlayback.trackId}:${nextTrack.id}`;
+    if (prefetchedNextTrackRef.current === prefetchKey) return;
+    prefetchedNextTrackRef.current = prefetchKey;
+
+    void fetchApi("/api/stream/prefetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ videoId: nextTrack.id }),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Prefetch request failed (${response.status}).`);
+        }
+      })
+      .catch((reason: unknown) => {
+        console.warn(
+          "[playback] Could not prefetch the next ecosystem track:",
+          reason instanceof Error ? reason.message : reason,
+        );
+      });
+  }, [eightDSnapshot, genreFilter, queueManager, snapshots.A]);
 
   const updateTasteProfile = useCallback(
     (profile: TasteProfile) => {
@@ -974,6 +1023,7 @@ export default function DjConsole() {
     async (track: TrackResult): Promise<boolean> => {
       const eightD = eightDEngineRef.current;
       if (!eightD) return false;
+      prefetchedNextTrackRef.current = null;
       setLoadingId(track.id);
       setError("");
       try {
@@ -984,6 +1034,7 @@ export default function DjConsole() {
             id: track.id,
             channelTitle: track.channelTitle,
             thumbnail: track.thumbnail ?? "",
+            duration: track.duration ?? undefined,
           },
         );
         recordTastePlay(track);
@@ -1262,6 +1313,7 @@ export default function DjConsole() {
   const loadYoutubeTrack = useCallback(async (id: DeckId, track: TrackResult): Promise<boolean> => {
     const mixer = engineRef.current;
     if (!mixer) return false;
+    if (id === "A") prefetchedNextTrackRef.current = null;
     setLoadingId(track.id);
     setError("");
     try {
@@ -1274,6 +1326,7 @@ export default function DjConsole() {
           id: track.id,
           channelTitle: track.channelTitle,
           thumbnail: track.thumbnail ?? "",
+          duration: track.duration ?? undefined,
         },
       );
       recordTastePlay(track);

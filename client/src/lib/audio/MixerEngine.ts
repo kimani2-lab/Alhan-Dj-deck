@@ -1,5 +1,4 @@
 import { Deck, type DeckId } from "./Deck";
-import { fetchAudioBuffer } from "./loadAudioBuffer";
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -111,10 +110,14 @@ export class MixerEngine {
     id: DeckId,
     url: string,
     title: string,
-    metadata?: { id: string; channelTitle: string; thumbnail: string },
+    metadata?: {
+      id: string;
+      channelTitle: string;
+      thumbnail: string;
+      duration?: number;
+    },
   ): Promise<void> {
-    const buffer = await fetchAudioBuffer(this.context, url);
-    await this.getDeck(id).load(buffer, title, metadata);
+    await this.getDeck(id).loadStream(url, title, metadata);
   }
 
   dispose(): void {

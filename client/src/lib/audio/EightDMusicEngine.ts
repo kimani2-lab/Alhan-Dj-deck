@@ -6,8 +6,7 @@ import {
   createBassEnhancement,
   type BassEnhancement,
 } from "./bassEnhancement.ts";
-import { detectBpm, orbitSpeedForBpm } from "./bpm.ts";
-import { fetchAudioBuffer } from "./loadAudioBuffer.ts";
+import { LiveBpmTracker, orbitSpeedForBpm } from "./bpm.ts";
 
 export type EightDMusicSnapshot = {
   title: string;
@@ -42,20 +41,22 @@ export class EightDMusicEngine {
   private readonly compressor: DynamicsCompressorNode;
   private readonly spatialEngine: LargeHall8DEngine;
   private readonly bassEnhancement: BassEnhancement;
-  private source: AudioBufferSourceNode | null = null;
-  private buffer: AudioBuffer | null = null;
+  private readonly bpmTracker = new LiveBpmTracker();
+  private mediaElement: HTMLAudioElement | null = null;
+  private mediaElementSource: MediaElementAudioSourceNode | null = null;
+  private durationHint = 0;
   private title = "No track loaded";
   private trackId: string | null = null;
   private channelTitle: string | null = null;
   private thumbnail: string | null = null;
-  private positionAtStart = 0;
-  private startedAt = 0;
   private playing = false;
   private bassBoost = false;
   private trebleMuted = false;
   private volume = 0.82;
   private bpm = 120;
+  private bpmManual = false;
   private spatialEnabled = true;
+  private streaming = false;
   private spatialSpeed = 0.12;
   private spatialDepth = 0.75;
   private spatialBeatSync = true;
@@ -64,6 +65,7 @@ export class EightDMusicEngine {
   private phase = 0;
   private pan = 0;
   private onEnded: (() => void) | null = null;
+  private onPlaybackError: ((error: Error) => void) | null = null;
 
   constructor(context: AudioContext, masterInput: AudioNode) {
     this.context = context;
@@ -110,16 +112,64 @@ export class EightDMusicEngine {
     if (this.context.state === "suspended") await this.context.resume();
   }
 
+  private createMediaElement(): HTMLAudioElement {
+    if (this.mediaElement) return this.mediaElement;
+    const element = new Audio();
+    element.crossOrigin = "anonymous";
+    element.preload = "auto";
+    element.addEventListener("ended", () => {
+      if (!this.streaming) return;
+      this.playing = false;
+      this.onEnded?.();
+    });
+    element.addEventListener("error", () => {
+      if (!this.streaming || !element.error) return;
+      this.playing = false;
+      this.onPlaybackError?.(
+        new Error(
+          element.error.message ||
+            `Audio streaming failed (media error ${element.error.code}).`,
+        ),
+      );
+    });
+    this.mediaElement = element;
+    this.mediaElementSource = this.context.createMediaElementSource(element);
+    this.mediaElementSource.connect(this.sourceOutput);
+    return element;
+  }
+
+  private clearMediaElement(): void {
+    if (!this.mediaElement) return;
+    this.mediaElement.pause();
+    this.mediaElement.removeAttribute("src");
+    this.mediaElement.load();
+  }
+
   async loadUrl(
     url: string,
     title: string,
-    metadata: { id: string; channelTitle: string; thumbnail: string },
+    metadata: {
+      id: string;
+      channelTitle: string;
+      thumbnail: string;
+      duration?: number;
+    },
   ): Promise<void> {
     await this.resume();
-    const buffer = await fetchAudioBuffer(this.context, url);
     this.pause();
-    this.buffer = buffer;
-    this.bpm = detectBpm(buffer);
+    this.streaming = false;
+    this.clearMediaElement();
+    const element = this.createMediaElement();
+    element.src = url;
+    element.load();
+    this.streaming = true;
+    this.durationHint =
+      typeof metadata.duration === "number" && metadata.duration > 0
+        ? metadata.duration
+        : 0;
+    this.bpm = 120;
+    this.bpmManual = false;
+    this.bpmTracker.reset();
     this.spatialBeatSync = true;
     this.spatialSpeed = orbitSpeedForBpm(this.bpm);
     this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
@@ -127,38 +177,26 @@ export class EightDMusicEngine {
     this.trackId = metadata.id;
     this.channelTitle = metadata.channelTitle;
     this.thumbnail = metadata.thumbnail;
-    this.positionAtStart = 0;
   }
 
   play(): void {
-    if (!this.buffer || this.playing) return;
-    if (this.positionAtStart >= this.buffer.duration) this.positionAtStart = 0;
-    const source = this.context.createBufferSource();
-    source.buffer = this.buffer;
-    source.connect(this.sourceOutput);
-    source.onended = () => {
-      if (this.source !== source) return;
-      this.source = null;
-      this.playing = false;
-      this.positionAtStart = 0;
-      source.disconnect();
-      this.onEnded?.();
-    };
-    this.source = source;
-    this.startedAt = this.context.currentTime;
+    if (!this.streaming || !this.mediaElement || this.playing) return;
+    if (this.duration > 0 && this.mediaElement.currentTime >= this.duration) {
+      this.mediaElement.currentTime = 0;
+    }
     this.playing = true;
-    source.start(0, this.positionAtStart);
+    void this.mediaElement.play().catch((reason: unknown) => {
+      this.playing = false;
+      this.onPlaybackError?.(
+        reason instanceof Error ? reason : new Error("Audio playback could not start."),
+      );
+    });
   }
 
   pause(): void {
-    if (!this.playing || !this.source) return;
-    this.positionAtStart = this.position;
-    const source = this.source;
-    this.source = null;
+    if (!this.mediaElement) return;
+    this.mediaElement.pause();
     this.playing = false;
-    source.onended = null;
-    source.stop();
-    source.disconnect();
   }
 
   togglePlayback(): void {
@@ -167,14 +205,12 @@ export class EightDMusicEngine {
   }
 
   seek(position: number): void {
-    if (!this.buffer) return;
-    const wasPlaying = this.playing;
-    if (wasPlaying) this.pause();
-    this.positionAtStart = Math.min(
-      Math.max(position, 0),
-      this.buffer.duration,
+    if (!this.streaming || !this.mediaElement) return;
+    const duration = this.duration;
+    this.mediaElement.currentTime = Math.max(
+      0,
+      duration > 0 ? Math.min(position, duration) : position,
     );
-    if (wasPlaying) this.play();
   }
 
   setVolume(value: number): void {
@@ -204,6 +240,7 @@ export class EightDMusicEngine {
   setBpm(bpm: number): void {
     if (!Number.isFinite(bpm) || bpm <= 0) return;
     this.bpm = Math.min(200, Math.max(60, bpm));
+    this.bpmManual = true;
     if (this.spatialBeatSync) {
       this.spatialSpeed = orbitSpeedForBpm(this.bpm);
       this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
@@ -250,24 +287,42 @@ export class EightDMusicEngine {
     );
   }
 
-  setOnEnded(handler: () => void): void {
+  setOnEnded(handler: (() => void) | null): void {
     this.onEnded = handler;
   }
 
+  setOnPlaybackError(handler: ((error: Error) => void) | null): void {
+    this.onPlaybackError = handler;
+  }
+
   get position(): number {
-    if (!this.buffer) return 0;
-    if (!this.playing) return this.positionAtStart;
-    return Math.min(
-      this.buffer.duration,
-      this.positionAtStart + (this.context.currentTime - this.startedAt),
-    );
+    return this.streaming ? this.mediaElement?.currentTime ?? 0 : 0;
   }
 
   get duration(): number {
-    return this.buffer?.duration ?? 0;
+    if (!this.streaming) return 0;
+    return Number.isFinite(this.mediaElement?.duration)
+      ? this.mediaElement!.duration
+      : this.durationHint;
   }
 
   getSnapshot(): EightDMusicSnapshot {
+    if (
+      this.streaming &&
+      this.playing &&
+      this.spatialBeatSync &&
+      !this.bpmManual
+    ) {
+      const detectedBpm = this.bpmTracker.update(
+        this.analyser,
+        this.context.currentTime,
+      );
+      if (detectedBpm !== null && detectedBpm !== this.bpm) {
+        this.bpm = detectedBpm;
+        this.spatialSpeed = orbitSpeedForBpm(this.bpm);
+        this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
+      }
+    }
     const elapsed = this.position;
     this.phase = this.spatialEngine.phase;
     this.pan = this.spatialEnabled
@@ -300,6 +355,11 @@ export class EightDMusicEngine {
 
   dispose(): void {
     this.pause();
+    this.streaming = false;
+    this.clearMediaElement();
+    this.mediaElementSource?.disconnect();
+    this.mediaElementSource = null;
+    this.mediaElement = null;
     this.sourceOutput.disconnect();
     this.trebleFilter.disconnect();
     this.bassEnhancement.dispose();

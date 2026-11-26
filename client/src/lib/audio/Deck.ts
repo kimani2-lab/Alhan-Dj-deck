@@ -6,7 +6,7 @@ import {
   createBassEnhancement,
   type BassEnhancement,
 } from "./bassEnhancement.ts";
-import { detectBpm, orbitSpeedForBpm } from "./bpm.ts";
+import { detectBpm, LiveBpmTracker, orbitSpeedForBpm } from "./bpm.ts";
 
 export {
   createHallImpulseResponse,
@@ -63,19 +63,26 @@ export class Deck {
   private readonly filterNode: BiquadFilterNode;
   private readonly spatialEngine: LargeHall8DEngine;
   private readonly bassEnhancement: BassEnhancement;
+  private readonly bpmTracker = new LiveBpmTracker();
   private source: AudioBufferSourceNode | null = null;
+  private mediaElement: HTMLAudioElement | null = null;
+  private mediaElementSource: MediaElementAudioSourceNode | null = null;
   private buffer: AudioBuffer | null = null;
+  private streaming = false;
+  private durationHint = 0;
   private title = "No track loaded";
   private trackId: string | null = null;
   private channelTitle: string | null = null;
   private thumbnail: string | null = null;
   private onEnded: (() => void) | null = null;
+  private onPlaybackError: ((error: Error) => void) | null = null;
   private positionAtStart = 0;
   private startedAt = 0;
   private cuePosition = 0;
   private playing = false;
   private tempo = 0;
   private bpm = 120;
+  private bpmManual = false;
   private volume = 0.82;
   private filter = 0;
   private bassBoost = false;
@@ -143,10 +150,14 @@ export class Deck {
   }
 
   get duration(): number {
-    return this.buffer?.duration ?? 0;
+    if (!this.streaming) return this.buffer?.duration ?? 0;
+    return Number.isFinite(this.mediaElement?.duration)
+      ? this.mediaElement!.duration
+      : this.durationHint;
   }
 
   get position(): number {
+    if (this.streaming) return this.mediaElement?.currentTime ?? 0;
     if (!this.playing || !this.buffer) return this.positionAtStart;
     const elapsedPosition =
       this.positionAtStart +
@@ -177,14 +188,69 @@ export class Deck {
     return this.buffer;
   }
 
+  private createMediaElement(): HTMLAudioElement {
+    if (this.mediaElement) return this.mediaElement;
+    const element = new Audio();
+    element.crossOrigin = "anonymous";
+    element.preload = "auto";
+    element.addEventListener("ended", () => {
+      if (!this.streaming) return;
+      this.playing = false;
+      this.positionAtStart = 0;
+      this.onEnded?.();
+    });
+    element.addEventListener("timeupdate", () => {
+      if (
+        this.streaming &&
+        this.loopEnabled &&
+        this.loopStart !== null &&
+        this.loopEnd !== null &&
+        element.currentTime >= this.loopEnd
+      ) {
+        element.currentTime = this.loopStart;
+      }
+    });
+    element.addEventListener("error", () => {
+      if (!this.streaming || !element.error) return;
+      this.playing = false;
+      this.onPlaybackError?.(
+        new Error(
+          element.error.message ||
+            `Audio streaming failed (media error ${element.error.code}).`,
+        ),
+      );
+    });
+    this.mediaElement = element;
+    this.mediaElementSource = this.context.createMediaElementSource(element);
+    this.mediaElementSource.connect(this.low);
+    return element;
+  }
+
+  private clearMediaElement(): void {
+    if (!this.mediaElement) return;
+    this.mediaElement.pause();
+    this.mediaElement.removeAttribute("src");
+    this.mediaElement.load();
+  }
+
   async load(
     buffer: AudioBuffer,
     title: string,
-    metadata?: { id: string; channelTitle: string; thumbnail: string },
+    metadata?: {
+      id: string;
+      channelTitle: string;
+      thumbnail: string;
+      duration?: number;
+    },
   ): Promise<void> {
     this.pause();
+    this.streaming = false;
+    this.clearMediaElement();
     this.buffer = buffer;
+    this.durationHint = buffer.duration;
     this.bpm = detectBpm(buffer);
+    this.bpmManual = false;
+    this.bpmTracker.reset();
     this.spatialBeatSync = true;
     this.spatialSpeed = orbitSpeedForBpm(this.bpm);
     this.spatialEngine?.setOrbitSpeed(this.spatialSpeed);
@@ -200,7 +266,61 @@ export class Deck {
     this.hotCues = Array(8).fill(null);
   }
 
+  async loadStream(
+    url: string,
+    title: string,
+    metadata?: {
+      id: string;
+      channelTitle: string;
+      thumbnail: string;
+      duration?: number;
+    },
+  ): Promise<void> {
+    this.pause();
+    this.streaming = false;
+    this.clearMediaElement();
+    this.buffer = null;
+    const element = this.createMediaElement();
+    element.playbackRate = this.playbackRate;
+    element.src = url;
+    element.load();
+    this.streaming = true;
+    this.durationHint =
+      typeof metadata?.duration === "number" && metadata.duration > 0
+        ? metadata.duration
+        : 0;
+    this.bpm = 120;
+    this.bpmManual = false;
+    this.bpmTracker.reset();
+    this.spatialBeatSync = true;
+    this.spatialSpeed = orbitSpeedForBpm(this.bpm);
+    this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
+    this.title = title;
+    this.trackId = metadata?.id ?? null;
+    this.channelTitle = metadata?.channelTitle ?? null;
+    this.thumbnail = metadata?.thumbnail ?? null;
+    this.positionAtStart = 0;
+    this.cuePosition = 0;
+    this.loopEnabled = false;
+    this.loopStart = null;
+    this.loopEnd = null;
+    this.hotCues = Array(8).fill(null);
+  }
+
   play(): void {
+    if (this.streaming && this.mediaElement) {
+      if (this.duration > 0 && this.mediaElement.currentTime >= this.duration) {
+        this.mediaElement.currentTime = 0;
+      }
+      this.playing = true;
+      void this.mediaElement.play().catch((reason: unknown) => {
+        this.playing = false;
+        this.onPlaybackError?.(
+          reason instanceof Error ? reason : new Error("Audio playback could not start."),
+        );
+      });
+      return;
+    }
     if (!this.buffer || this.playing) return;
     if (this.positionAtStart >= this.buffer.duration) this.positionAtStart = 0;
 
@@ -232,6 +352,12 @@ export class Deck {
   }
 
   pause(): void {
+    if (this.streaming && this.mediaElement) {
+      this.positionAtStart = this.mediaElement.currentTime;
+      this.mediaElement.pause();
+      this.playing = false;
+      return;
+    }
     if (!this.playing || !this.source) return;
     this.positionAtStart = this.position;
     const source = this.source;
@@ -248,6 +374,13 @@ export class Deck {
   }
 
   seek(seconds: number): void {
+    if (this.streaming && this.mediaElement) {
+      const duration = this.duration;
+      const target = Math.max(0, duration > 0 ? Math.min(seconds, duration) : seconds);
+      this.positionAtStart = target;
+      this.mediaElement.currentTime = target;
+      return;
+    }
     if (!this.buffer) return;
     const wasPlaying = this.playing;
     this.pause();
@@ -264,7 +397,13 @@ export class Deck {
   }
 
   setHotCue(index: number): void {
-    if (index < 0 || index >= this.hotCues.length || !this.buffer) return;
+    if (
+      index < 0 ||
+      index >= this.hotCues.length ||
+      (!this.buffer && !this.streaming)
+    ) {
+      return;
+    }
     this.hotCues[index] = this.position;
   }
 
@@ -286,11 +425,15 @@ export class Deck {
         0.015,
       );
     }
+    if (this.streaming && this.mediaElement) {
+      this.mediaElement.playbackRate = this.playbackRate;
+    }
   }
 
   setBpm(bpm: number): void {
     if (!Number.isFinite(bpm) || bpm <= 0) return;
     this.bpm = clamp(bpm, 40, 240);
+    this.bpmManual = true;
     if (this.spatialBeatSync) {
       this.spatialSpeed = orbitSpeedForBpm(this.bpm);
       this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
@@ -302,7 +445,7 @@ export class Deck {
   }
 
   setLoopIn(): void {
-    if (!this.buffer) return;
+    if (!this.buffer && !this.streaming) return;
     this.loopStart = this.position;
     if (this.source) this.source.loopStart = this.loopStart;
     if (this.loopEnd !== null && this.loopEnd <= this.loopStart) {
@@ -313,7 +456,7 @@ export class Deck {
 
   setLoopOut(): void {
     if (
-      !this.buffer ||
+      (!this.buffer && !this.streaming) ||
       this.loopStart === null ||
       this.position <= this.loopStart
     ) {
@@ -324,10 +467,17 @@ export class Deck {
   }
 
   setBeatLoop(beats: number): boolean {
-    if (!this.buffer || !Number.isFinite(beats) || beats <= 0) return false;
+    if (
+      (!this.buffer && !this.streaming) ||
+      !Number.isFinite(beats) ||
+      beats <= 0 ||
+      this.duration <= 0
+    ) {
+      return false;
+    }
     const beatDuration = 60 / this.bpm;
     const start = Math.floor(this.position / beatDuration) * beatDuration;
-    const end = Math.min(start + beats * beatDuration, this.buffer.duration);
+    const end = Math.min(start + beats * beatDuration, this.duration);
     if (end - start < 0.02) return false;
     this.loopStart = start;
     this.loopEnd = end;
@@ -358,6 +508,10 @@ export class Deck {
 
   setOnEnded(handler: (() => void) | null): void {
     this.onEnded = handler;
+  }
+
+  setOnPlaybackError(handler: ((error: Error) => void) | null): void {
+    this.onPlaybackError = handler;
   }
 
   setVolume(value: number): void {
@@ -436,6 +590,19 @@ export class Deck {
   }
 
   getSnapshot(): DeckSnapshot {
+    if (this.streaming && this.playing && !this.bpmManual) {
+      const detectedBpm = this.bpmTracker.update(
+        this.analyser,
+        this.context.currentTime,
+      );
+      if (detectedBpm !== null && detectedBpm !== this.bpm) {
+        this.bpm = detectedBpm;
+        if (this.spatialBeatSync) {
+          this.spatialSpeed = orbitSpeedForBpm(this.bpm);
+          this.spatialEngine.setOrbitSpeed(this.spatialSpeed);
+        }
+      }
+    }
     return {
       id: this.id,
       title: this.title,
@@ -473,6 +640,11 @@ export class Deck {
 
   dispose(): void {
     this.pause();
+    this.streaming = false;
+    this.clearMediaElement();
+    this.mediaElementSource?.disconnect();
+    this.mediaElementSource = null;
+    this.mediaElement = null;
     this.low.disconnect();
     this.padInput.disconnect();
     this.mid.disconnect();

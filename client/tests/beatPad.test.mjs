@@ -149,6 +149,7 @@ test("resets all eight hot cue slots when loading a new deck track", async () =>
   Object.assign(deck, {
     pause() {},
     hotCues: Array(4).fill(null),
+    bpmTracker: { reset() {} },
   });
 
   await deck.load({ duration: 12 }, "New track");

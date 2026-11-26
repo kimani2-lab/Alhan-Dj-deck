@@ -63,7 +63,11 @@ npm test
 
 ## Deployment: YouTube playback on cloud hosts
 
-The client plays YouTube audio by fetching `GET /api/stream/:videoId`, which runs `yt-dlp` on the server. On cloud/datacenter hosts (Render, Railway, VPS, etc.) YouTube frequently answers `yt-dlp` with `Sign in to confirm you're not a bot`. When that happens the browser used to receive an empty `200` response, which surfaced as `Unable to decode audio data`. The server now returns a real error instead, and retries with alternate YouTube player clients.
+The client plays YouTube audio through `GET /api/stream/:videoId`. The server resolves a direct audio URL with `yt-dlp`, caches it in memory for up to 25 minutes (maximum 200 tracks), and proxies the native audio with HTTP byte ranges for progressive playback and seeking. Remote tracks use an `<audio>` element connected to the existing Web Audio effects graph; local files continue to use decoded buffers.
+
+`POST /api/stream/prefetch` accepts `{ "videoId": "<YouTube ID>" }` and warms the URL cache without downloading audio bytes. The client pings `GET /api/health` on startup and prefetches the next ecosystem-queue track once playback passes halfway or has about 20 seconds remaining. Expired upstream URLs are evicted and resolved once more after a `403` or `410`.
+
+On cloud/datacenter hosts (Render, Railway, VPS, etc.) YouTube may answer `yt-dlp` with `Sign in to confirm you're not a bot`. The backend logs whether cookies were passed and the exact `yt-dlp` stderr on extraction failures; bot-check failures are not retried in a tight loop.
 
 If songs still fail on your host, the IP is being challenged. In order of reliability:
 
@@ -76,7 +80,7 @@ For Vercel, set `NEXT_PUBLIC_API_URL` to the backend origin (for example `https:
 
 ## Audio engine
 
-`client/src/lib/audio/Deck.ts` encapsulates each deck's source, transport, 3-band EQ, filter, HRTF panner, generated stereo hall impulse response, spatial LFO, channel gain, cue state, and optional pad input. Hall 8D blends a clear dry path with a binaural orbit and convolved hall return. `MixerEngine.ts` owns both decks, the constant-power crossfader, a dedicated beat-pad bus, and master gain. `BeatPadEngine.ts` synthesizes eight one-shot sounds and creates a fresh buffer source per hit for polyphonic retriggering. `AudioEngine.ts` is the public export surface. React controls call these classes directly; waveform and transport UI state is sampled separately from the audio graph.
+`client/src/lib/audio/Deck.ts` encapsulates each deck's source, transport, 3-band EQ, filter, HRTF panner, generated stereo hall impulse response, spatial LFO, channel gain, cue state, and optional pad input. Remote URLs play progressively through a reusable cross-origin `<audio preload="auto">` source; local files remain decoded buffers. Hall 8D blends a clear dry path with a binaural orbit and convolved hall return. `MixerEngine.ts` owns both decks, the constant-power crossfader, a dedicated beat-pad bus, and master gain. `BeatPadEngine.ts` synthesizes eight one-shot sounds and creates a fresh buffer source per hit for polyphonic retriggering. `AudioEngine.ts` is the public export surface. React controls call these classes directly; waveform and transport UI state is sampled separately from the audio graph.
 
 Hot cues are set on first press and jump to their stored positions on later presses; the performance-pad Hot Cues mode provides eight cue slots. BPM is user-editable; Sync matches the entered BPM values within the supported ±16% pitch range.
 

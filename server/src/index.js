@@ -1,11 +1,18 @@
 import { spawn } from "node:child_process";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdtemp, readdir, rm, writeFile, chmod, stat } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import os from "node:os";
 import path from "node:path";
 import cors from "cors";
 import express from "express";
 import { registerAiDjRoutes } from "./aiDj.js";
+import {
+  getResolvedStreamMetadata,
+  parseResolvedStreamUrl,
+  StreamUrlCache,
+} from "./streamUrlCache.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 5000);
@@ -30,6 +37,7 @@ function isAllowedOrigin(origin) {
   const normalized = normalizeOrigin(origin);
   return (
     allowedOrigins.has(normalized) ||
+    /^https?:\/\/(?:localhost|127\.0\.0\.1):\d+$/i.test(normalized) ||
     /^https:\/\/[^/]+\.vercel\.app$/i.test(normalized)
   );
 }
@@ -179,8 +187,9 @@ async function ensureCookiesFile() {
   }
 }
 
-function getYtDlpBaseArgs() {
-  const args = ["--no-warnings", "--sleep-requests", "1"];
+function getYtDlpBaseArgs({ includeSleepRequests = true } = {}) {
+  const args = ["--no-warnings"];
+  if (includeSleepRequests) args.push("--sleep-requests", "1");
   if (ytDlpCookiesPath && existsSync(ytDlpCookiesPath)) {
     args.push("--cookies", ytDlpCookiesPath);
   }
@@ -231,6 +240,10 @@ function setStreamCorsHeaders(request, response) {
   }
   response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   response.setHeader("Accept-Ranges", "none");
+  response.setHeader(
+    "Access-Control-Expose-Headers",
+    "Accept-Ranges, Content-Range, Content-Length, Content-Type",
+  );
 }
 
 function spawnYtDlp(args) {
@@ -550,192 +563,186 @@ app.get("/api/search", async (request, response) => {
 });
 
 const PLAYER_CLIENTS = [null, "android", "ios", "tv", "mweb"];
+const streamUrlCache = new StreamUrlCache();
+const streamUrlResolutions = new Map();
 
-function buildAudioArgs(videoId, client) {
-  return [
-    ...getYtDlpBaseArgs(),
-    ...getYtDlpCommonArgs(),
-    "--quiet",
-    "-f",
-    "bestaudio[ext=m4a]/bestaudio/best",
-    "-o",
-    "-",
-    ...(client ? ["--extractor-args", `youtube:player_client=${client}`] : []),
-    `https://www.youtube.com/watch?v=${videoId}`,
-  ];
+async function resolveStreamUrl(videoId) {
+  const cached = streamUrlCache.get(videoId);
+  if (cached) return cached;
+
+  const pending = streamUrlResolutions.get(videoId);
+  if (pending) return pending;
+
+  const resolution = (async () => {
+    const args = [
+      ...getYtDlpBaseArgs({ includeSleepRequests: false }),
+      "--no-playlist",
+      "--no-check-certificates",
+      "-f",
+      "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+      "--get-url",
+      `https://www.youtube.com/watch?v=${videoId}`,
+    ];
+    const output = await runYtDlp(args, 30_000, "stream-resolve");
+    const streamUrl = parseResolvedStreamUrl(output);
+    return streamUrlCache.set(videoId, {
+      streamUrl,
+      ...getResolvedStreamMetadata(streamUrl),
+    });
+  })();
+
+  streamUrlResolutions.set(videoId, resolution);
+  try {
+    return await resolution;
+  } finally {
+    streamUrlResolutions.delete(videoId);
+  }
 }
 
-function sniffAudioContentType(chunk) {
-  if (chunk.length >= 8 && chunk.toString("ascii", 4, 8) === "ftyp") {
-    return "audio/mp4";
-  }
-  if (
-    chunk.length >= 4 &&
-    chunk[0] === 0x1a &&
-    chunk[1] === 0x45 &&
-    chunk[2] === 0xdf &&
-    chunk[3] === 0xa3
-  ) {
-    return "audio/webm";
-  }
-  if (chunk.length >= 3 && chunk.toString("ascii", 0, 3) === "ID3") {
-    return "audio/mpeg";
-  }
-  if (chunk.length >= 2 && chunk[0] === 0xff && (chunk[1] & 0xe0) === 0xe0) {
-    return "audio/mpeg";
-  }
-  return null;
-}
-
-function attemptStream(response, videoId, args, download) {
-  return new Promise((resolve, reject) => {
-    let child = null;
-    let settled = false;
-    let started = false;
-    let clientClosed = false;
-    let stderr = "";
-    let timer = null;
-
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      response.removeListener("close", onClientClose);
-      if (error) reject(error);
-      else resolve();
-    };
-
-    const onClientClose = () => {
-      clientClosed = true;
-      if (child && !child.killed) child.kill();
-    };
-    response.once("close", onClientClose);
-
-    timer = setTimeout(() => {
-      if (started) return;
-      if (child && !child.killed) child.kill();
-      logYtDlpFailure("stream", stderr);
-      finish(
-        new Error(
-          "YouTube did not send any audio before the request timed out. The video may be unavailable or the server IP may be blocked.",
-        ),
-      );
-    }, 60_000);
-
-    logYtDlpAttempt("stream", args);
-    spawnYtDlp(args)
-      .then((spawned) => {
-        child = spawned;
-        if (response.destroyed) {
-          child.kill();
-          finish(new Error("The client disconnected."));
-          return;
-        }
-        if (settled) {
-          child.kill();
-          return;
-        }
-
-        child.stderr.on("data", (chunk) => {
-          stderr += chunk.toString("utf8");
-        });
-        child.on("error", (error) => {
-          logYtDlpFailure("stream", stderr);
-          finish(error);
-        });
-        child.stdout.once("data", (firstChunk) => {
-          if (started || settled) return;
-          if (response.destroyed) {
-            child.kill();
-            finish(new Error("The client disconnected."));
-            return;
-          }
-          started = true;
-          if (timer) clearTimeout(timer);
-          settled = true;
-
-          const contentType = download
-            ? "audio/mpeg"
-            : sniffAudioContentType(firstChunk) ?? "audio/mp4";
-          response.setHeader("Content-Type", contentType);
-          response.setHeader("Cache-Control", "no-store");
-          if (download) {
-            response.setHeader(
-              "Content-Disposition",
-              `attachment; filename="alhan-${videoId}.mp3"`,
-            );
-          }
-
-          response.write(firstChunk);
-          child.stdout.pause();
-          child.stdout.pipe(response);
-          resolve();
-        });
-        child.on("close", (code) => {
-          if (started) {
-            if (code !== 0) logYtDlpFailure("stream", stderr);
-            return;
-          }
-          if (settled) return;
-          if (clientClosed) {
-            finish(new Error("The client disconnected."));
-            return;
-          }
-          logYtDlpFailure("stream", stderr);
-          finish(
-            new Error(
-              formatYtDlpError(
-                stderr.trim() || `yt-dlp exited with status ${code}.`,
-              ),
-            ),
-          );
-        });
-      })
-      .catch((error) => {
-        logYtDlpFailure("stream", "");
-        finish(error);
-      });
+function updateStreamMetadata(videoId, streamUrl, upstream) {
+  const rangeTotal = upstream.headers
+    .get("content-range")
+    ?.match(/\/(\d+)$/)?.[1];
+  const rawContentLength =
+    rangeTotal ??
+    (upstream.status === 206 ? null : upstream.headers.get("content-length"));
+  const contentLength =
+    rawContentLength === null ? null : Number(rawContentLength);
+  streamUrlCache.updateMetadata(videoId, streamUrl, {
+    mimeType: upstream.headers.get("content-type")?.split(";")[0] ?? null,
+    contentLength:
+      Number.isSafeInteger(contentLength) && contentLength >= 0
+        ? contentLength
+        : null,
   });
 }
 
-async function streamYtDlp(response, videoId, download = false) {
-  let lastError = null;
-  for (const client of PLAYER_CLIENTS) {
-    if (response.destroyed || response.headersSent) return;
-    try {
-      await attemptStream(response, videoId, buildAudioArgs(videoId, client), download);
-      return;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (response.destroyed || response.headersSent) return;
-      if (
-        /sign in to confirm|not a bot|http error 403|status 429|too many requests/i.test(
-          lastError.message,
-        )
-      ) {
-        console.warn(
-          "[yt-dlp] Stream bot-check/rate-limit response; stopping player-client retries.",
-        );
-        break;
-      }
-      if (
-        !/requested format|timed out|no audio/i.test(
-          lastError.message,
-        )
-      ) {
-        break;
-      }
-    }
+async function proxyStreamRequest(request, response, videoId, retryExpiredUrl = true) {
+  const resolved = await resolveStreamUrl(videoId);
+  const controller = new AbortController();
+  const abortOnDisconnect = () => {
+    if (!response.writableEnded) controller.abort();
+  };
+  response.once("close", abortOnDisconnect);
+
+  let upstream;
+  try {
+    const headers = {
+      "User-Agent":
+        request.headers["user-agent"] ??
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+      "Accept-Encoding": "identity",
+      Referer: "https://www.youtube.com/",
+    };
+    if (request.headers.range) headers.Range = request.headers.range;
+    upstream = await fetch(resolved.streamUrl, {
+      headers,
+      redirect: "follow",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    response.removeListener("close", abortOnDisconnect);
+    throw error;
   }
 
-  if (!response.headersSent && !response.destroyed) {
+  if (
+    retryExpiredUrl &&
+    (upstream.status === 403 || upstream.status === 410)
+  ) {
+    await upstream.body?.cancel();
+    response.removeListener("close", abortOnDisconnect);
+    streamUrlCache.delete(videoId);
+    return proxyStreamRequest(request, response, videoId, false);
+  }
+
+  if (!upstream.ok && upstream.status !== 206 && upstream.status !== 416) {
+    await upstream.body?.cancel();
+    response.removeListener("close", abortOnDisconnect);
+    console.error(
+      `[stream] Upstream request failed for ${videoId} with HTTP ${upstream.status}.`,
+    );
     response.status(502).json({
-      error:
-        lastError?.message ||
-        "Could not start the audio stream. The track may be unavailable or YouTube is blocking the server.",
+      error: `The upstream audio stream returned HTTP ${upstream.status}.`,
     });
+    return;
+  }
+
+  updateStreamMetadata(videoId, resolved.streamUrl, upstream);
+  response.status(upstream.status);
+  response.setHeader("Accept-Ranges", "bytes");
+  response.setHeader("Cache-Control", "no-store");
+  for (const header of ["content-range", "etag", "last-modified"]) {
+    const value = upstream.headers.get(header);
+    if (value) response.setHeader(header, value);
+  }
+  const contentType = upstream.headers.get("content-type") ?? resolved.mimeType;
+  if (contentType) response.setHeader("content-type", contentType);
+  const contentRange = upstream.headers.get("content-range");
+  const rangeBounds = contentRange?.match(/^bytes (\d+)-(\d+)\/(?:\d+|\*)$/);
+  const rangeLength = rangeBounds
+    ? Number(rangeBounds[2]) - Number(rangeBounds[1]) + 1
+    : null;
+  const contentLength =
+    upstream.headers.get("content-length") ??
+    (rangeLength !== null
+      ? String(rangeLength)
+      : upstream.status === 200 && resolved.contentLength !== null
+        ? String(resolved.contentLength)
+        : null);
+  if (contentLength) response.setHeader("content-length", contentLength);
+
+  try {
+    if (upstream.body) {
+      await pipeline(Readable.fromWeb(upstream.body), response);
+    } else {
+      response.end();
+    }
+  } catch (error) {
+    if (!response.destroyed) {
+      response.destroy(error instanceof Error ? error : new Error("Audio proxy failed."));
+    }
+  } finally {
+    response.removeListener("close", abortOnDisconnect);
   }
 }
+
+app.post("/api/stream/prefetch", async (request, response) => {
+  const videoId = String(request.body?.videoId ?? request.body?.id ?? "");
+  if (!/^[\w-]{11}$/.test(videoId)) {
+    response.status(400).json({ error: "A valid YouTube video ID is required." });
+    return;
+  }
+
+  const cached = streamUrlCache.get(videoId);
+  console.info(
+    `[stream] prefetch attempt for ${videoId}; URL cache ${
+      cached ? "hit" : "miss"
+    }; --cookies ${
+      cached
+        ? "not needed (cached URL)"
+        : ytDlpCookiesPath && existsSync(ytDlpCookiesPath)
+          ? "will be passed"
+          : "not configured"
+    }.`,
+  );
+  try {
+    const { mimeType, expiresAt } = await resolveStreamUrl(videoId);
+    response.setHeader("Cache-Control", "no-store");
+    response.json({ status: "cached", videoId, mimeType, expiresAt });
+  } catch (error) {
+    console.error(
+      `[stream] Prefetch failed for ${videoId}: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`,
+    );
+    response.status(502).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : "Could not prefetch the audio stream.",
+    });
+  }
+});
 
 app.get("/api/stream/:videoId", (request, response) => {
   const { videoId } = request.params;
@@ -744,8 +751,37 @@ app.get("/api/stream/:videoId", (request, response) => {
     return;
   }
 
+  const cached = streamUrlCache.get(videoId);
+  console.info(
+    `[stream] request for ${videoId}; URL cache ${
+      cached ? "hit" : "miss"
+    }; --cookies ${
+      cached
+        ? "not needed (cached URL)"
+        : ytDlpCookiesPath && existsSync(ytDlpCookiesPath)
+          ? "will be passed"
+          : "not configured"
+    }.`,
+  );
   setStreamCorsHeaders(request, response);
-  void streamYtDlp(response, videoId);
+  response.setHeader("Accept-Ranges", "bytes");
+  void proxyStreamRequest(request, response, videoId).catch((error) => {
+    console.error(
+      `[stream] Request failed for ${videoId}: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`,
+    );
+    if (!response.headersSent && !response.destroyed) {
+      response.status(502).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Could not start the audio stream.",
+      });
+    } else if (!response.destroyed) {
+      response.destroy(error instanceof Error ? error : new Error("Audio stream failed."));
+    }
+  });
 });
 
 async function runYtDlpWithClientFallback(videoId, outputTemplate) {
