@@ -60,33 +60,6 @@ app.use(
 );
 app.use(express.json({ limit: "32kb" }));
 
-async function ensureYtDlp() {
-  if (process.env.YT_DLP_PATH?.trim()) return;
-  if (process.platform === "win32") return;
-  const executable = path.join(os.tmpdir(), process.platform === "win32" ? "alhan-yt-dlp.exe" : "alhan-yt-dlp");
-  try {
-    const metadata = await stat(executable);
-    if (metadata.isFile() && metadata.size > 100_000) {
-      process.env.YT_DLP_PATH = executable;
-      return;
-    }
-  } catch {
-    // Download below.
-  }
-
-  const response = await fetch(
-    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
-  );
-  if (!response.ok) {
-    throw new Error(`Could not download yt-dlp (${response.status}).`);
-  }
-  const bytes = await response.arrayBuffer();
-  await writeFile(executable, Buffer.from(bytes), { mode: 0o755 });
-  await chmod(executable, 0o755);
-  process.env.YT_DLP_PATH = executable;
-  console.log("Downloaded yt-dlp runtime.");
-}
-
 const youtubeCookiesPath =
   process.platform === "win32"
     ? path.join(os.tmpdir(), "yt-cookies.txt")
@@ -386,9 +359,21 @@ function runYtDlpProcess(args, timeoutMs = 50_000, operation = "command") {
   });
 }
 
-function runYtDlp(args, timeoutMs = 50_000, operation = "command") {
-  return runWithYtDlpSlot(() =>
-    runYtDlpProcess(args, timeoutMs, operation),
+const YT_DLP_PRIORITY = {
+  stream: 10,
+  download: 5,
+  background: 0,
+};
+
+function runYtDlp(
+  args,
+  timeoutMs = 50_000,
+  operation = "command",
+  priority = YT_DLP_PRIORITY.background,
+) {
+  return runWithYtDlpSlot(
+    () => runYtDlpProcess(args, timeoutMs, operation),
+    { priority },
   );
 }
 
@@ -515,7 +500,9 @@ app.get("/api/status", async (_request, response) => {
 });
 
 const searchCache = new Map();
+const searchResolutions = new Map();
 const SEARCH_CACHE_TTL_MS = 30 * 60 * 1000;
+const SEARCH_CACHE_MAX_ENTRIES = 200;
 
 app.get("/api/search", async (request, response) => {
   const query = String(request.query.q ?? "").trim();
@@ -524,59 +511,82 @@ app.get("/api/search", async (request, response) => {
     return;
   }
 
-  const cacheKey = query.toLowerCase();
-  const cached = searchCache.get(cacheKey);
-  if (cached && Date.now() - cached.createdAt < SEARCH_CACHE_TTL_MS) {
-    response.setHeader("Cache-Control", "public, max-age=300");
-    response.json(cached.value);
+  const videoId = getYouTubeVideoId(query);
+  const isUrl = /^https?:\/\//i.test(query);
+  if (isUrl && !videoId) {
+    response.status(400).json({ error: "Paste a valid YouTube video URL." });
     return;
   }
 
-  try {
-    const videoId = getYouTubeVideoId(query);
-    const isUrl = /^https?:\/\//i.test(query);
-    if (isUrl && !videoId) {
-      response.status(400).json({ error: "Paste a valid YouTube video URL." });
-      return;
-    }
-    const ytArgs = [
-      ...getYtDlpBaseArgs(),
-      ...getYtDlpCommonArgs(),
-      "--dump-single-json",
-      ...(videoId ? [] : ["--flat-playlist"]),
-      videoId
-        ? `https://www.youtube.com/watch?v=${videoId}`
-        : `ytsearch10:${query}`,
-    ];
-    let result;
-    try {
-      result = await runYtDlp(ytArgs, 50_000, "search");
-    } catch (firstError) {
-      if (!/timed out/i.test(
-        firstError instanceof Error ? firstError.message : "",
-      )) throw firstError;
-      result = await runYtDlp([
+  const cacheKey = query.replace(/\s+/g, " ").toLowerCase();
+  const cached = searchCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < SEARCH_CACHE_TTL_MS) {
+    response.setHeader("Cache-Control", "public, max-age=300");
+    response.setHeader("X-Search-Cache", "hit");
+    response.json(cached.value);
+    return;
+  }
+  if (cached) searchCache.delete(cacheKey);
+
+  let pending = searchResolutions.get(cacheKey);
+  const deduped = Boolean(pending);
+  if (!pending) {
+    pending = (async () => {
+      const ytArgs = [
         ...getYtDlpBaseArgs(),
         ...getYtDlpCommonArgs(),
         "--dump-single-json",
-        "--extractor-retries",
-        "1",
-        "--flat-playlist",
-        `ytsearch10:${query}`,
-      ], 50_000, "search-timeout-retry");
-    }
-    const data = JSON.parse(result);
-    const entries = Array.isArray(data.entries) ? data.entries : [data];
-    const tracks = entries
-      .filter((entry) => entry.id && entry.title)
-      .map(normalizeTrack);
-    const value = { tracks };
-    searchCache.set(cacheKey, { createdAt: Date.now(), value });
-    if (searchCache.size > 200) {
-      const oldestKey = searchCache.keys().next().value;
-      if (oldestKey) searchCache.delete(oldestKey);
-    }
+        ...(videoId ? [] : ["--flat-playlist"]),
+        videoId
+          ? `https://www.youtube.com/watch?v=${videoId}`
+          : `ytsearch10:${query}`,
+      ];
+      let result;
+      try {
+        result = await runYtDlp(ytArgs, 50_000, "search");
+      } catch (firstError) {
+        if (!/timed out/i.test(
+          firstError instanceof Error ? firstError.message : "",
+        )) throw firstError;
+        result = await runYtDlp([
+          ...getYtDlpBaseArgs(),
+          ...getYtDlpCommonArgs(),
+          "--dump-single-json",
+          "--extractor-retries",
+          "1",
+          "--flat-playlist",
+          `ytsearch10:${query}`,
+        ], 50_000, "search-timeout-retry");
+      }
+      const data = JSON.parse(result);
+      const entries = Array.isArray(data.entries) ? data.entries : [data];
+      const tracks = entries
+        .filter((entry) => entry.id && entry.title)
+        .map(normalizeTrack);
+      const value = { tracks };
+      searchCache.set(cacheKey, { createdAt: Date.now(), value });
+      while (searchCache.size > SEARCH_CACHE_MAX_ENTRIES) {
+        const oldestKey = searchCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        searchCache.delete(oldestKey);
+      }
+      return value;
+    })();
+
+    searchResolutions.set(cacheKey, pending);
+    void pending
+      .catch(() => {})
+      .finally(() => {
+        if (searchResolutions.get(cacheKey) === pending) {
+          searchResolutions.delete(cacheKey);
+        }
+      });
+  }
+
+  try {
+    const value = await pending;
     response.setHeader("Cache-Control", "public, max-age=300");
+    response.setHeader("X-Search-Cache", deduped ? "deduped" : "miss");
     response.json(value);
   } catch (error) {
     response.status(502).json({
@@ -590,11 +600,34 @@ const streamUrlCache = new StreamUrlCache();
 const streamUrlResolutions = new Map();
 
 async function resolveStreamUrl(videoId) {
+  const startedAt = Date.now();
   const cached = streamUrlCache.get(videoId);
-  if (cached) return cached;
+  if (cached) {
+    const resolveMs = Date.now() - startedAt;
+    console.info(
+      `[stream] resolve ${videoId}; cacheHit=true; resolveMs=${resolveMs}.`,
+    );
+    return { ...cached, cacheHit: true, resolveMs };
+  }
 
   const pending = streamUrlResolutions.get(videoId);
-  if (pending) return pending;
+  if (pending) {
+    try {
+      const resolved = await pending;
+      const resolveMs = Date.now() - startedAt;
+      console.info(
+        `[stream] resolve ${videoId}; cacheHit=false; deduped=true; resolveMs=${resolveMs}.`,
+      );
+      return { ...resolved, cacheHit: false, resolveMs };
+    } catch (error) {
+      console.error(
+        `[stream] resolve ${videoId} failed; cacheHit=false; deduped=true; resolveMs=${
+          Date.now() - startedAt
+        }; error=${error instanceof Error ? error.message : "unknown error"}.`,
+      );
+      throw error;
+    }
+  }
 
   const resolution = (async () => {
     const args = [
@@ -616,6 +649,7 @@ async function resolveStreamUrl(videoId) {
           attemptArgs,
           50_000,
           isFallback ? "stream-resolve-format-fallback" : "stream-resolve",
+          YT_DLP_PRIORITY.stream,
         ),
       () => {
         formatFallbackUsed = true;
@@ -640,15 +674,27 @@ async function resolveStreamUrl(videoId) {
         formatFallbackUsed ? AUDIO_FALLBACK_FORMAT : AUDIO_FIRST_FORMAT
       }; extension=${extension}; mime=${metadata.mimeType}; retry=${formatFallbackUsed ? "fallback" : "none"}.`,
     );
-    return streamUrlCache.set(videoId, {
+    const entry = streamUrlCache.set(videoId, {
       streamUrl,
       ...metadata,
     });
+    const resolveMs = Date.now() - startedAt;
+    console.info(
+      `[stream] resolve ${videoId}; cacheHit=false; resolveMs=${resolveMs}.`,
+    );
+    return { ...entry, cacheHit: false, resolveMs };
   })();
 
   streamUrlResolutions.set(videoId, resolution);
   try {
     return await resolution;
+  } catch (error) {
+    console.error(
+      `[stream] resolve ${videoId} failed; cacheHit=false; resolveMs=${
+        Date.now() - startedAt
+      }; error=${error instanceof Error ? error.message : "unknown error"}.`,
+    );
+    throw error;
   } finally {
     streamUrlResolutions.delete(videoId);
   }
@@ -869,6 +915,7 @@ async function runYtDlpWithClientFallback(videoId, outputTemplate) {
             attemptArgs,
             180_000,
             isFallback ? "download-format-fallback" : "download",
+            YT_DLP_PRIORITY.download,
           ),
         () => {
           formatFallbackUsed = true;
@@ -964,7 +1011,7 @@ app.get("/api/download", (request, response) => {
 
 registerAiDjRoutes(app);
 
-void Promise.all([ensureYtDlp(), ensureCookiesFile()])
+void ensureCookiesFile()
   .catch((error) => {
     console.error(
       error instanceof Error ? error.message : "yt-dlp bootstrap failed.",

@@ -82,6 +82,45 @@ import PwaInstallButton from "./PwaInstallButton";
 
 const TASTE_PROMPTED_KEY = "alhan-dj:taste-prompted:v1";
 const BOT_ACTIVATED_KEY = "alhanBotActivated";
+const SEARCH_SESSION_CACHE_PREFIX = "alhan-dj:search-cache:v1:";
+const SEARCH_SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function readSessionSearchCache(cacheKey: string): TrackResult[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(
+      SEARCH_SESSION_CACHE_PREFIX + cacheKey,
+    );
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      createdAt?: number;
+      tracks?: TrackResult[];
+    };
+    if (
+      typeof parsed.createdAt !== "number" ||
+      Date.now() - parsed.createdAt >= SEARCH_SESSION_CACHE_TTL_MS ||
+      !Array.isArray(parsed.tracks)
+    ) {
+      window.sessionStorage.removeItem(SEARCH_SESSION_CACHE_PREFIX + cacheKey);
+      return null;
+    }
+    return parsed.tracks;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionSearchCache(cacheKey: string, tracks: TrackResult[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(
+      SEARCH_SESSION_CACHE_PREFIX + cacheKey,
+      JSON.stringify({ createdAt: Date.now(), tracks }),
+    );
+  } catch {
+    // sessionStorage may be unavailable or full; in-memory caching still works.
+  }
+}
 
 type LocalTrack = { file: File; id: string };
 type DragState = { id: DeckId; x: number; tempo: number; position: number };
@@ -1174,12 +1213,31 @@ export default function DjConsole() {
 
   const searchRequestRef = useRef(0);
   const trackSearchCacheRef = useRef(new Map<string, Promise<TrackResult[]>>());
+  const backgroundSearchChainRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  const runBackgroundSearch = useCallback(
+    <T,>(task: () => Promise<T>): Promise<T> => {
+      const next = backgroundSearchChainRef.current.then(() => task());
+      backgroundSearchChainRef.current = next.catch(() => undefined);
+      return next;
+    },
+    [],
+  );
 
   const fetchTracks = useCallback(
     async (query: string): Promise<TrackResult[]> => {
       const cacheKey = query.trim().toLowerCase();
       const cached = trackSearchCacheRef.current.get(cacheKey);
       if (cached) return cached;
+
+      const sessionCached = readSessionSearchCache(cacheKey);
+      if (sessionCached) {
+        const resolved = Promise.resolve(
+          sessionCached.map((track) => normalizeTrack(track)),
+        );
+        trackSearchCacheRef.current.set(cacheKey, resolved);
+        return resolved;
+      }
 
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 125_000);
@@ -1206,7 +1264,9 @@ export default function DjConsole() {
           error?: string;
         }>(response, "YouTube search failed");
         if (!response.ok) throw new Error(data.error ?? "YouTube search failed.");
-        return (data.tracks ?? []).map((track) => normalizeTrack(track));
+        const tracks = (data.tracks ?? []).map((track) => normalizeTrack(track));
+        writeSessionSearchCache(cacheKey, tracks);
+        return tracks;
       })();
 
       trackSearchCacheRef.current.set(cacheKey, request);
@@ -1220,37 +1280,47 @@ export default function DjConsole() {
 
   useEffect(() => {
     let cancelled = false;
+    let startTimer = 0;
 
     const loadGenrePreviews = async () => {
       for (const genre of GENRES) {
         if (cancelled) break;
-        await new Promise((resolve) => window.setTimeout(resolve, 180));
         try {
-            const artistSeed =
-              genre.aliases.find((alias) =>
-                /[a-z]/i.test(alias) &&
-                !["hip hop", "afrobeats", "house", "rock", "jazz", "pop", "country", "blues", "gospel", "soul", "latin", "folk", "indie", "metal", "drill", "pop music"].includes(alias.toLowerCase()),
-              ) ?? genre.aliases[0];
-            const tracks = await fetchTracks(
-              `${artistSeed} ${genre.label} official music`,
-            );
-            if (!cancelled && tracks[0]) {
-              setGenrePreviewTracks((current) => ({
-                ...current,
-                [genre.id]: tracks[0],
-              }));
-            }
+          const artistSeed =
+            genre.aliases.find((alias) =>
+              /[a-z]/i.test(alias) &&
+              !["hip hop", "afrobeats", "house", "rock", "jazz", "pop", "country", "blues", "gospel", "soul", "latin", "folk", "indie", "metal", "drill", "pop music"].includes(alias.toLowerCase()),
+            ) ?? genre.aliases[0];
+          const tracks = await runBackgroundSearch(() =>
+            cancelled
+              ? Promise.resolve<TrackResult[]>([])
+              : fetchTracks(`${artistSeed} ${genre.label} official music`),
+          );
+          if (!cancelled && tracks[0]) {
+            setGenrePreviewTracks((current) => ({
+              ...current,
+              [genre.id]: tracks[0],
+            }));
+          }
         } catch {
           // Genre cards retain their Lucide icon when a preview search fails.
         }
+        if (cancelled) break;
+        await new Promise((resolve) => window.setTimeout(resolve, 1_500));
       }
     };
 
-    void loadGenrePreviews();
+    // Keep Render's CPU free for the first playback: previews start well after
+    // the primary shelf loads and then run one at a time.
+    startTimer = window.setTimeout(() => {
+      void loadGenrePreviews();
+    }, 8_000);
+
     return () => {
       cancelled = true;
+      window.clearTimeout(startTimer);
     };
-  }, [fetchTracks]);
+  }, [fetchTracks, runBackgroundSearch]);
 
   const searchTracks = useCallback(
     async (query: string): Promise<TrackResult[]> => {
@@ -1281,55 +1351,74 @@ export default function DjConsole() {
     const genreIds = trendingGenreKey
       .split("|")
       .filter(Boolean) as GenreId[];
+    if (genreIds.length === 0) return;
+
     let cancelled = false;
-    const timer = window.setTimeout(() => {
+    const collected = new Map<string, TrackResult>();
+
+    const publish = () => {
       if (cancelled) return;
+      const activeProfile = tasteProfileRef.current;
+      const tracks = [...collected.values()].sort(
+        (left, right) =>
+          scoreTrackTaste(right, activeProfile) -
+            scoreTrackTaste(left, activeProfile) ||
+          left.title.localeCompare(right.title),
+      );
+      if (tracks.length > 0) setTrendingTracks(tracks.slice(0, 12));
+    };
+
+    const loadGenre = async (genre: GenreId) => {
+      const tracks = await fetchTracks(genreQuery(genre));
+      if (cancelled) return;
+      for (const track of tracks) {
+        if (!collected.has(track.id)) collected.set(track.id, track);
+      }
+      publish();
+    };
+
+    const loadPrimaryThenDeferRest = async () => {
       setTrendingLoading(true);
-      void Promise.allSettled(
-        genreIds.map((genre) => fetchTracks(genreQuery(genre))),
-      )
-        .then((results) => {
-          if (cancelled) return;
-          const seen = new Set<string>();
-          const tracks: TrackResult[] = [];
-          let firstError: unknown = null;
-          for (const result of results) {
-            if (result.status === "fulfilled") {
-              for (const track of result.value) {
-                if (!seen.has(track.id)) {
-                  seen.add(track.id);
-                  tracks.push(track);
-                }
-              }
-            } else if (!firstError) {
-              firstError = result.reason;
-            }
-          }
-          const activeProfile = tasteProfileRef.current;
-          tracks.sort(
-            (left, right) =>
-              scoreTrackTaste(right, activeProfile) -
-                scoreTrackTaste(left, activeProfile) ||
-              left.title.localeCompare(right.title),
+      let firstError: unknown = null;
+      try {
+        await loadGenre(genreIds[0]);
+      } catch (reason) {
+        firstError = reason;
+      } finally {
+        if (!cancelled) setTrendingLoading(false);
+      }
+      if (cancelled) return;
+      if (collected.size === 0 && firstError) {
+        setError(
+          firstError instanceof Error
+            ? firstError.message
+            : "Could not load trending tracks.",
+        );
+      }
+
+      // Only the primary shelf is fetched up front. Remaining genre shelves are
+      // filled one at a time so yt-dlp stays idle when the user presses Play.
+      for (const genre of genreIds.slice(1)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2_500));
+        if (cancelled) return;
+        try {
+          await runBackgroundSearch(() =>
+            cancelled ? Promise.resolve() : loadGenre(genre),
           );
-          if (tracks.length > 0) setTrendingTracks(tracks.slice(0, 12));
-          if (tracks.length === 0 && firstError) {
-            setError(
-              firstError instanceof Error
-                ? firstError.message
-                : "Could not load trending tracks.",
-            );
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setTrendingLoading(false);
-        });
+        } catch {
+          // Secondary shelves are best-effort.
+        }
+      }
+    };
+
+    const timer = window.setTimeout(() => {
+      void loadPrimaryThenDeferRest();
     }, 0);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [fetchTracks, homeSearchText, trendingGenreKey]);
+  }, [fetchTracks, homeSearchText, runBackgroundSearch, trendingGenreKey]);
 
   const runHomeSearch = useCallback(
     (query: string) => {
@@ -1507,20 +1596,9 @@ export default function DjConsole() {
       queryIndex += 1;
       refillAttempts.current = queryIndex;
       try {
-        const response = await fetchApi(
-          `/api/search?q=${encodeURIComponent(query)}`,
-        );
-        const data = await readApiJson<{
-          tracks?: TrackResult[];
-          error?: string;
-        }>(response, "YouTube search failed");
-        if (!response.ok) {
-          throw new Error(data.error ?? "Could not load ecosystem recommendations.");
-        }
+        const tracks = await fetchTracks(query);
         if (queueManager.getSnapshot().seed?.id !== seedId) return;
-        queueManager.addCandidates(
-          (data.tracks ?? []).map((track) => normalizeTrack(track)),
-        );
+        queueManager.addCandidates(tracks);
         refreshEcosystemQueue();
       } catch (reason) {
         setError(
@@ -1531,7 +1609,7 @@ export default function DjConsole() {
         return;
       }
     }
-  }, [queueManager, refreshEcosystemQueue]);
+  }, [fetchTracks, queueManager, refreshEcosystemQueue]);
 
   const playAiTrackIn8D = useCallback(async (
     track: TrackResult,

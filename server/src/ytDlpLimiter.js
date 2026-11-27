@@ -6,7 +6,7 @@ export function createConcurrencyLimiter(maxConcurrent) {
   let active = 0;
   const queue = [];
 
-  return function runLimited(task) {
+  return function runLimited(task, { priority = 0 } = {}) {
     return new Promise((resolve, reject) => {
       const start = () => {
         active += 1;
@@ -15,12 +15,21 @@ export function createConcurrencyLimiter(maxConcurrent) {
           .then(resolve, reject)
           .finally(() => {
             active -= 1;
-            queue.shift()?.();
+            queue.shift()?.start();
           });
       };
 
-      if (active < maxConcurrent) start();
-      else queue.push(start);
+      if (active < maxConcurrent) {
+        start();
+        return;
+      }
+
+      const entry = { start, priority };
+      let index = queue.length;
+      while (index > 0 && queue[index - 1].priority < priority) {
+        index -= 1;
+      }
+      queue.splice(index, 0, entry);
     });
   };
 }
