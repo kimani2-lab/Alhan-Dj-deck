@@ -1,4 +1,8 @@
 import { Deck, type DeckId } from "./Deck";
+import {
+  installAudioUnlockHandlers,
+  resumeAudioContext,
+} from "./audioSession.ts";
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));

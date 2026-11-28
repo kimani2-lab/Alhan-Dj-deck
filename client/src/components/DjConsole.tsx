@@ -1947,50 +1947,75 @@ export default function DjConsole() {
     [queueManager, refreshEcosystemQueue],
   );
 
-  useEffect(() => {
-    if (!engine) return;
-    const handleEnded = () => {
-      if (aiSetRef.current.active) {
-        const isLastSetTrack =
-          aiSetRef.current.index === aiSetRef.current.items.length - 1;
-        advanceAiSet();
-        if (isLastSetTrack) void playNextEcosystemTrack();
-        return;
-      }
-      const endedTrackId = engine.deckA.getSnapshot().trackId;
-      if (autoPlayClearedTrackRef.current?.trackId === endedTrackId) return;
-      const queueSnapshot = queueManager.getSnapshot();
-      const isExplicitSeed =
-        queueSnapshot.seed?.id === explicitEcosystemSeedRef.current;
-      if (!isExplicitSeed && queueSnapshot.activeId !== endedTrackId) {
-        const endedTrack = youtubeTracks.find(
-          (track) => track.id === endedTrackId,
-        );
-        if (!endedTrack) {
-          if (queueSnapshot.seed) {
-            queueManager.clear();
-            refreshEcosystemQueue();
-          }
-          return;
-        }
-        queueManager.setSeed(endedTrack);
-        queueManager.markPlaying(endedTrack);
-        refillAttempts.current = 0;
-        refreshEcosystemQueue();
-      }
-      if (queueManager.getSnapshot().seed) {
+  const handleTrackEnded = useCallback((endedTrackId: string | null) => {
+    if (aiSetRef.current.active) {
+      const isLastSetTrack =
+        aiSetRef.current.index === aiSetRef.current.items.length - 1;
+      advanceAiSet();
+      if (isLastSetTrack) void playNextEcosystemTrack();
+      return;
+    }
+
+    const queueSnapshot = queueManager.getSnapshot();
+    if (!endedTrackId) {
+      if (queueSnapshot.seed || queueSnapshot.upNextQueue.length > 0) {
         void playNextEcosystemTrack();
       }
-    };
-    engine.deckA.setOnEnded(handleEnded);
-    return () => engine.deckA.setOnEnded(null);
+      return;
+    }
+    if (autoPlayClearedTrackRef.current?.trackId === endedTrackId) return;
+
+    const isExplicitSeed =
+      queueSnapshot.seed?.id === explicitEcosystemSeedRef.current;
+    if (!isExplicitSeed && queueSnapshot.activeId !== endedTrackId) {
+      const endedTrack = youtubeTracks.find(
+        (track) => track.id === endedTrackId,
+      );
+      if (!endedTrack) {
+        if (queueSnapshot.seed) {
+          queueManager.clear();
+          refreshEcosystemQueue();
+        }
+        return;
+      }
+      queueManager.setSeed(endedTrack);
+      queueManager.markPlaying(endedTrack);
+      refillAttempts.current = 0;
+      refreshEcosystemQueue();
+    }
+    if (queueManager.getSnapshot().seed) {
+      void playNextEcosystemTrack();
+    }
   }, [
     advanceAiSet,
-    engine,
     playNextEcosystemTrack,
     queueManager,
     refreshEcosystemQueue,
     youtubeTracks,
+  ]);
+
+  useEffect(() => {
+    if (!engine) return;
+    const handleEnded = () => {
+      handleTrackEnded(engine.deckA.getSnapshot().trackId);
+    };
+    engine.deckA.setOnEnded(handleEnded);
+    return () => engine.deckA.setOnEnded(null);
+  }, [
+    engine,
+    handleTrackEnded,
+  ]);
+
+  useEffect(() => {
+    if (!eightDEngine) return;
+    const handleEnded = () => {
+      handleTrackEnded(eightDEngine.getSnapshot().trackId);
+    };
+    eightDEngine.setOnEnded(handleEnded);
+    return () => eightDEngine.setOnEnded(null);
+  }, [
+    eightDEngine,
+    handleTrackEnded,
   ]);
 
   const searchActive = homeSearchText.trim().length > 0;
