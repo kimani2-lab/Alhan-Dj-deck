@@ -41,6 +41,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import {
   BeatPadEngine,
@@ -78,6 +79,7 @@ import {
 } from "../utils/tasteProfile";
 import { useTasteProfile } from "../hooks/useTasteProfile";
 import {
+  apiUrl,
   apiRequest,
   ApiRequestError,
 } from "../lib/api";
@@ -85,8 +87,29 @@ import PwaInstallButton from "./PwaInstallButton";
 
 const TASTE_PROMPTED_KEY = "alhan-dj:taste-prompted:v1";
 const BOT_ACTIVATED_KEY = "alhanBotActivated";
+const APP_THEME_KEY = "alhan-dj:theme:v1";
+const APP_THEME_EVENT = "alhan-dj:theme-change";
 const SEARCH_SESSION_CACHE_PREFIX = "alhan-dj:search-cache:v1:";
 const SEARCH_SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function getAppThemeSnapshot(): AppTheme {
+  try {
+    return window.localStorage.getItem(APP_THEME_KEY) === "light"
+      ? "light"
+      : "dark";
+  } catch {
+    return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+  }
+}
+
+function subscribeToAppTheme(onChange: () => void): () => void {
+  window.addEventListener("storage", onChange);
+  window.addEventListener(APP_THEME_EVENT, onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener(APP_THEME_EVENT, onChange);
+  };
+}
 
 function readSessionSearchCache(cacheKey: string): TrackResult[] | null {
   if (typeof window === "undefined") return null;
@@ -128,6 +151,7 @@ function writeSessionSearchCache(cacheKey: string, tracks: TrackResult[]) {
 type LocalTrack = { file: File; id: string };
 type DragState = { id: DeckId; x: number; tempo: number; position: number };
 type AppMode = "home" | "dj" | "music" | "settings" | "about";
+type AppTheme = "light" | "dark";
 type MediaPlaybackSource = "eightD" | "deckA" | "deckB";
 
 
@@ -800,6 +824,11 @@ export default function DjConsole() {
   const [crossfader, setCrossfader] = useState(0);
   const [masterVolume, setMasterVolume] = useState(0.82);
   const [mode, setMode] = useState<AppMode>("home");
+  const theme = useSyncExternalStore(
+    subscribeToAppTheme,
+    getAppThemeSnapshot,
+    (): AppTheme => "dark",
+  );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [beatPadOpen, setBeatPadOpen] = useState(false);
   const taste = useTasteProfile();
@@ -844,6 +873,20 @@ export default function DjConsole() {
   const explicitEcosystemSeedRef = useRef<string | null>(null);
   const autoPlayClearedTrackRef = useRef<{ trackId: string | null } | null>(null);
   const prefetchedNextTrackRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  const changeTheme = (nextTheme: AppTheme) => {
+    document.documentElement.dataset.theme = nextTheme;
+    try {
+      window.localStorage.setItem(APP_THEME_KEY, nextTheme);
+    } catch {
+      // The selected theme still applies for this session if storage is unavailable.
+    }
+    window.dispatchEvent(new Event(APP_THEME_EVENT));
+  };
 
   useEffect(() => {
     if (!mobileNavOpen) return;
@@ -1208,7 +1251,7 @@ export default function DjConsole() {
       setError("");
       try {
         await eightD.loadUrl(
-          `/api/stream/${encodeURIComponent(track.id)}`,
+          apiUrl(`/api/stream/${encodeURIComponent(track.id)}`),
           track.title,
           {
             id: track.id,
@@ -1574,7 +1617,7 @@ export default function DjConsole() {
       await mixer.resume();
       await mixer.loadUrl(
         id,
-        `/api/stream/${encodeURIComponent(track.id)}`,
+        apiUrl(`/api/stream/${encodeURIComponent(track.id)}`),
         track.title,
         {
           id: track.id,
@@ -2608,6 +2651,8 @@ export default function DjConsole() {
             historyCount={taste.profile.recentlyPlayed.length}
             onClearHistory={taste.clearRecentlyPlayed}
             onOpenDj={() => setMode("dj")}
+            theme={theme}
+            onThemeChange={changeTheme}
           />
         ) : mode === "about" ? (
           <AboutPanel

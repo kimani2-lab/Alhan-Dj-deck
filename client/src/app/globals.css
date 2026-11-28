@@ -8,6 +8,9 @@
   --text: #e7ebef;
   --cyan: #32d6cb;
   --pink: #f184b8;
+  --surface: #111820;
+  --surface-raised: #171f28;
+  --surface-inset: #0c1117;
 }
 
 * { box-sizing: border-box; }
@@ -1949,6 +1952,366 @@ button:focus-visible, input:focus-visible { outline: 1px solid var(--cyan); outl
   *, *::before, *::after { scroll-behavior: auto !important; }
 }
 
+.app-info-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: clamp(18px, 3vw, 36px);
+  color: var(--text);
+}
+.app-info-head { max-width: 720px; margin: 0 auto 20px; }
+.app-info-head h1 { margin: 7px 0; color: var(--text); font-size: 24px; }
+.app-info-head p,
+.app-info-card p { color: var(--muted); line-height: 1.6; }
+.app-info-hero {
+  width: min(100%, 980px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 auto 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--surface);
+}
+.app-info-hero-mark { display: grid; place-items: center; color: var(--cyan); }
+.app-info-hero > div { display: flex; flex-direction: column; gap: 4px; }
+.app-info-hero > div b { font-size: 13px; }
+.app-info-hero > div span,
+.app-info-version,
+.app-info-footer,
+.app-info-legal { color: var(--muted); font-size: 9px; }
+.app-info-version { margin-left: auto; }
+.app-info-footer {
+  width: min(100%, 980px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 16px auto;
+}
+.app-info-footer > span { display: flex; align-items: center; gap: 6px; }
+.app-info-legal {
+  width: min(100%, 980px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px auto;
+}
+.desktop-download-action { width: min(100%, 980px); margin: 0 auto; }
+.app-info-grid {
+  width: min(100%, 980px);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
+  gap: 12px;
+  margin: 0 auto;
+}
+.app-info-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.app-info-card-head { display: flex; align-items: center; gap: 10px; }
+.app-info-card-head > div { display: flex; flex-direction: column; gap: 4px; }
+.app-info-card-head b { color: var(--text); font-size: 12px; }
+.app-info-card-head small { color: var(--muted); font-size: 8px; letter-spacing: .08em; }
+.app-info-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--cyan) 28%, transparent);
+  border-radius: 8px;
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 8%, transparent);
+}
+.app-info-card p { flex: 1; margin: 0; font-size: 10px; }
+.app-info-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.app-info-button,
+.theme-options button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-raised);
+  font-size: 9px;
+  cursor: pointer;
+}
+.app-info-button:hover,
+.theme-options button:hover { border-color: var(--cyan); }
+.app-info-button.primary { border-color: var(--cyan); color: #071415; background: var(--cyan); }
+.app-info-button.danger { border-color: rgba(241,132,184,.35); color: var(--pink); }
+.app-info-button:disabled { opacity: .45; cursor: not-allowed; }
+.theme-options { display: flex; gap: 8px; }
+.theme-options button { min-width: 96px; }
+.theme-options button.selected {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 12%, var(--surface));
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --background: #f2f5f8;
+  --line: rgba(31, 45, 59, .15);
+  --muted: #647487;
+  --text: #1d2b38;
+  --cyan: #087f83;
+  --pink: #b84879;
+  --surface: #ffffff;
+  --surface-raised: #f7f9fb;
+  --surface-inset: #edf2f6;
+}
+:root[data-theme="light"] body { color: var(--text); background: var(--background); }
+:root[data-theme="light"] .app-shell {
+  background:
+    radial-gradient(ellipse at 12% 8%, rgba(8,127,131,.08), transparent 34%),
+    radial-gradient(ellipse at 88% 90%, rgba(184,72,121,.055), transparent 32%),
+    var(--background);
+}
+:root[data-theme="light"] .app-shell::before,
+:root[data-theme="light"] .app-shell::after { display: none; }
+:root[data-theme="light"] .nav-rail,
+:root[data-theme="light"] .topbar,
+:root[data-theme="light"] .bottom-bar,
+:root[data-theme="light"] .deck-panel,
+:root[data-theme="light"] .mixer-panel,
+:root[data-theme="light"] .spatial-control-strip,
+:root[data-theme="light"] .music-transport,
+:root[data-theme="light"] .music-queue,
+:root[data-theme="light"] .music-search,
+:root[data-theme="light"] .browser-drawer,
+:root[data-theme="light"] .ai-drawer,
+:root[data-theme="light"] .alhan-home-shelf,
+:root[data-theme="light"] .alhan-recent-panel,
+:root[data-theme="light"] .alhan-recently-played,
+:root[data-theme="light"] .alhan-home-player,
+:root[data-theme="light"] .app-info-card,
+:root[data-theme="light"] .genre-onboarding-card,
+:root[data-theme="light"] .ai-builder {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 5px 18px rgba(26, 43, 59, .06);
+  backdrop-filter: none;
+}
+:root[data-theme="light"] .nav-rail { border-radius: 0; }
+:root[data-theme="light"] .topbar { flex: 0 0 62px; }
+:root[data-theme="light"] .rail-brand,
+:root[data-theme="light"] .rail-item,
+:root[data-theme="light"] .topbar-center,
+:root[data-theme="light"] .live-indicator,
+:root[data-theme="light"] .headphone-status,
+:root[data-theme="light"] .deck-label h2,
+:root[data-theme="light"] .track-title,
+:root[data-theme="light"] .spatial-title b,
+:root[data-theme="light"] .mixer-heading,
+:root[data-theme="light"] .mixer-level,
+:root[data-theme="light"] .mixer-level strong,
+:root[data-theme="light"] .mixer-deck-row,
+:root[data-theme="light"] .mixer-deck-row b,
+:root[data-theme="light"] .queue-heading h2,
+:root[data-theme="light"] .queue-track-meta > b,
+:root[data-theme="light"] .search-result-meta b,
+:root[data-theme="light"] .music-search-label b,
+:root[data-theme="light"] .alhan-section-heading h2,
+:root[data-theme="light"] .alhan-track-row article > b,
+:root[data-theme="light"] .alhan-recently-played > button,
+:root[data-theme="light"] .alhan-home-player-info b,
+:root[data-theme="light"] .app-shell .eyebrow {
+  color: var(--text);
+}
+:root[data-theme="light"] .rail-brand b { color: var(--cyan); }
+:root[data-theme="light"] .rail-brand-mark { color: var(--cyan); filter: none; }
+:root[data-theme="light"] .rail-item {
+  border-color: transparent;
+  background: transparent;
+}
+:root[data-theme="light"] .rail-item:hover { color: var(--cyan); background: var(--surface-inset); }
+:root[data-theme="light"] .rail-item.active {
+  border-color: color-mix(in srgb, var(--cyan) 36%, transparent);
+  color: #fff;
+  background: var(--cyan);
+  box-shadow: none;
+}
+:root[data-theme="light"] .rail-item.active svg { color: #fff; filter: none; }
+:root[data-theme="light"] .feel-beat-badge {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--surface-raised);
+  box-shadow: none;
+}
+:root[data-theme="light"] .feel-beat-badge span,
+:root[data-theme="light"] .deck-status,
+:root[data-theme="light"] .rotary-label,
+:root[data-theme="light"] .rotary-value,
+:root[data-theme="light"] .vertical-fader,
+:root[data-theme="light"] .tempo-scale,
+:root[data-theme="light"] .spatial-title small,
+:root[data-theme="light"] .deck-spatial-note,
+:root[data-theme="light"] .queue-track-meta > small,
+:root[data-theme="light"] .search-result-meta small,
+:root[data-theme="light"] .queue-empty,
+:root[data-theme="light"] .alhan-track-row article > small,
+:root[data-theme="light"] .alhan-recently-played > button small,
+:root[data-theme="light"] .alhan-home-player-info small {
+  color: var(--muted);
+}
+:root[data-theme="light"] .mode-switch {
+  border-color: var(--line);
+  background: var(--surface-inset);
+}
+:root[data-theme="light"] .mode-switch button { color: var(--muted); }
+:root[data-theme="light"] .mode-switch button.selected {
+  color: #fff;
+  background: var(--cyan);
+  box-shadow: none;
+}
+:root[data-theme="light"] .mode-switch button:last-child.selected {
+  color: #fff;
+  background: var(--pink);
+  box-shadow: none;
+}
+:root[data-theme="light"] .browser-toggle,
+:root[data-theme="light"] .mobile-nav-toggle,
+:root[data-theme="light"] .mobile-nav-close {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--surface-raised);
+}
+:root[data-theme="light"] .home-mode .topbar { background: var(--surface); }
+:root[data-theme="light"] .dj-workspace > .deck-panel,
+:root[data-theme="light"] .dj-workspace > .mixer-panel,
+:root[data-theme="light"] .deck-panel,
+:root[data-theme="light"] .mixer-panel,
+:root[data-theme="light"] .spatial-control-strip,
+:root[data-theme="light"] .music-transport,
+:root[data-theme="light"] .music-queue {
+  background: var(--surface);
+}
+:root[data-theme="light"] .music-stage {
+  border-color: var(--line);
+  background: linear-gradient(135deg, #e6eff5, #f3edf6);
+  box-shadow: inset 0 0 24px rgba(35, 57, 78, .05);
+}
+:root[data-theme="light"] .music-stage:has(.stage-artwork)::after { opacity: .45; }
+:root[data-theme="light"] .stage-caption h1,
+:root[data-theme="light"] .stage-caption > span:last-child,
+:root[data-theme="light"] .stage-position,
+:root[data-theme="light"] .visual-mode { color: #fff; }
+:root[data-theme="light"] .music-search input,
+:root[data-theme="light"] .music-search-compact input,
+:root[data-theme="light"] .ai-prompt-field textarea,
+:root[data-theme="light"] .ai-add-row input {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--surface-raised);
+}
+:root[data-theme="light"] .music-search input::placeholder,
+:root[data-theme="light"] .music-search-compact input::placeholder,
+:root[data-theme="light"] .ai-add-row input::placeholder,
+:root[data-theme="light"] .ai-prompt-field textarea::placeholder { color: #788898; }
+:root[data-theme="light"] .queue-track,
+:root[data-theme="light"] .search-result-track,
+:root[data-theme="light"] .alhan-recent-row { border-color: var(--line); }
+:root[data-theme="light"] .queue-track.current { background: color-mix(in srgb, var(--cyan) 8%, white); }
+:root[data-theme="light"] .ecosystem-seed,
+:root[data-theme="light"] .queue-library-link,
+:root[data-theme="light"] .music-queue .music-search-compact {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--surface-raised);
+}
+:root[data-theme="light"] .alhan-home {
+  background:
+    radial-gradient(ellipse at 72% 10%, rgba(8,127,131,.07), transparent 28%),
+    linear-gradient(145deg, #f8fafc, #edf2f6);
+}
+:root[data-theme="light"] .alhan-home-shelf,
+:root[data-theme="light"] .alhan-recent-panel,
+:root[data-theme="light"] .alhan-recently-played,
+:root[data-theme="light"] .alhan-home-player { border-color: var(--line); }
+:root[data-theme="light"] .alhan-home-shelf-heading,
+:root[data-theme="light"] .alhan-recently-played > button {
+  border-color: var(--line);
+}
+:root[data-theme="light"] .alhan-home-shelf-heading b,
+:root[data-theme="light"] .alhan-home-player-info b { color: var(--text); }
+:root[data-theme="light"] .alhan-home-shelf-heading span,
+:root[data-theme="light"] .alhan-home-player-info .eyebrow { color: var(--cyan); }
+:root[data-theme="light"] .alhan-home-hero .eyebrow { color: #b7e9ff; }
+:root[data-theme="light"] .alhan-home-player-progress,
+:root[data-theme="light"] .alhan-home-empty { color: var(--muted); }
+:root[data-theme="light"] .alhan-home-player-progress > div,
+:root[data-theme="light"] .waveform-wrap,
+:root[data-theme="light"] .mixer-spectrum { background-color: var(--surface-inset); }
+:root[data-theme="light"] .alhan-recent-menu[open] > div {
+  border-color: var(--line);
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgba(26, 43, 59, .14);
+}
+:root[data-theme="light"] .app-info-page { background: transparent; }
+:root[data-theme="light"] .app-info-head h1,
+:root[data-theme="light"] .app-info-card-head b { color: var(--text); }
+:root[data-theme="light"] .app-info-card p,
+:root[data-theme="light"] .app-info-head p,
+:root[data-theme="light"] .app-info-card-head small { color: var(--muted); }
+:root[data-theme="light"] .app-info-hero {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--surface);
+}
+:root[data-theme="light"] .app-info-hero > div span,
+:root[data-theme="light"] .app-info-version,
+:root[data-theme="light"] .app-info-footer,
+:root[data-theme="light"] .app-info-legal { color: var(--muted); }
+:root[data-theme="light"] .ai-drawer :where(.ai-drawer-title h2, .ai-builder-head h3, .ai-setlist-name, .ai-reply p, .ai-runner-meta b) {
+  color: var(--text);
+}
+:root[data-theme="light"] .ai-drawer :where(.ai-hint, .ai-checkbox, .ai-runner-meta small, .ai-chip, .ai-voice-control > span) {
+  color: var(--muted);
+}
+:root[data-theme="light"] .ai-builder,
+:root[data-theme="light"] .ai-chip,
+:root[data-theme="light"] .ai-setlist-row,
+:root[data-theme="light"] .ai-voice-control,
+:root[data-theme="light"] .ai-prompt-field textarea,
+:root[data-theme="light"] .ai-add-row input {
+  border-color: var(--line);
+  background: var(--surface-raised);
+}
+:root[data-theme="light"] .genre-onboarding-backdrop { background: rgba(30, 43, 58, .38); }
+:root[data-theme="light"] .genre-onboarding-head h1 { color: var(--text); }
+:root[data-theme="light"] .genre-onboarding-head p,
+:root[data-theme="light"] .genre-onboarding-footer > span { color: var(--muted); }
+:root[data-theme="light"] .genre-card,
+:root[data-theme="light"] .genre-card:nth-child(2n),
+:root[data-theme="light"] .genre-card:nth-child(3n) {
+  border-color: var(--line);
+  color: var(--text);
+  background: linear-gradient(145deg, #fff, #edf3f7);
+  text-shadow: none;
+}
+:root[data-theme="light"] .genre-card small { color: var(--muted); text-shadow: none; }
+:root[data-theme="light"] .genre-card-main::after { display: none; }
+:root[data-theme="light"] .nav-drawer-backdrop { background: rgba(30, 43, 58, .24); }
+
+@media (max-width: 640px) {
+  .app-info-page { padding: 16px 12px; }
+  .app-info-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* AI DJ assistant drawer */
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .ai-toggle { border-color: rgba(50, 214, 203, .32); color: #c6f7f2; background: rgba(50, 214, 203, .055); }
@@ -2192,6 +2555,57 @@ button:focus-visible, input:focus-visible { outline: 1px solid var(--cyan); outl
 .ai-step-order { width: 23px; height: 23px; display: grid; place-items: center; border: 1px solid rgba(165, 181, 199, .18); border-radius: 50%; color: #d4dfe4; background: #10161f; font-size: 8px; font-weight: 700; }
 .ai-step-body { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .ai-step-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+:root[data-theme="light"] .beatpad-dock {
+  border-color: var(--line);
+  color: var(--text);
+  background: linear-gradient(150deg, #fff, #f1f5f8);
+  box-shadow: 0 18px 48px rgba(26, 43, 59, .2);
+  backdrop-filter: blur(12px);
+}
+:root[data-theme="light"] .beatpad-title b,
+:root[data-theme="light"] .beatpad-volume b { color: var(--text); }
+:root[data-theme="light"] .beatpad-title small,
+:root[data-theme="light"] .beatpad-volume,
+:root[data-theme="light"] .beatpad-footer,
+:root[data-theme="light"] .beatpad-pad small,
+:root[data-theme="light"] .beatpad-key { color: var(--muted); }
+:root[data-theme="light"] .beatpad-deck-select,
+:root[data-theme="light"] .beatpad-deck-select button,
+:root[data-theme="light"] .beatpad-mode-tabs button,
+:root[data-theme="light"] .beatpad-option,
+:root[data-theme="light"] .beatpad-pad,
+:root[data-theme="light"] .ai-resolved-track,
+:root[data-theme="light"] .ai-step,
+:root[data-theme="light"] .ai-step-order {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--surface-raised);
+}
+:root[data-theme="light"] .ai-source,
+:root[data-theme="light"] .ai-result-head small,
+:root[data-theme="light"] .ai-fx-flags span,
+:root[data-theme="light"] .ai-resolved-meta small,
+:root[data-theme="light"] .ai-resolving,
+:root[data-theme="light"] .ai-set-toolbar > span {
+  color: var(--muted);
+}
+:root[data-theme="light"] .ai-result-head b,
+:root[data-theme="light"] .ai-resolved-meta b,
+:root[data-theme="light"] .ai-step-order,
+:root[data-theme="light"] .ai-step-title { color: var(--text); }
+:root[data-theme="light"] .ai-deck-actions button { color: var(--cyan); }
+:root[data-theme="light"] .ai-deck-actions .ai-play-8d { color: var(--pink); }
+:root[data-theme="light"] .ai-step { background: var(--surface-raised); }
+:root[data-theme="light"] .error-banner {
+  border-color: rgba(184, 72, 121, .28);
+  color: #7d294e;
+  background: #fff3f7;
+}
+
+@media (max-width: 640px) {
+  .app-info-footer { align-items: flex-start; flex-direction: column; }
+}
 .ai-step-title > b { flex: 1; min-width: 120px; overflow: hidden; color: #d6e1e6; font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ai-stage-pill { display: inline-flex; align-items: center; gap: 3px; padding: 3px 5px; border: 1px solid currentColor; border-radius: 3px; font-size: 6px; letter-spacing: .08em; text-transform: uppercase; }
 .ai-stage-pill.ai-stage-build { color: #7ff6ec; }

@@ -4,9 +4,11 @@ import {
   ArrowRight,
   Bot,
   Headphones,
+  Moon,
   RotateCcw,
   SlidersHorizontal,
   Sparkles,
+  Sun,
   Trash2,
   Volume2,
 } from "lucide-react";
@@ -21,6 +23,8 @@ export default function SettingsPanel({
   historyCount,
   onClearHistory,
   onOpenDj,
+  theme,
+  onThemeChange,
 }: {
   botActivated: boolean;
   onActivateBot: () => void;
@@ -31,6 +35,8 @@ export default function SettingsPanel({
   historyCount: number;
   onClearHistory: () => void;
   onOpenDj: () => void;
+  theme: "light" | "dark";
+  onThemeChange: (theme: "light" | "dark") => void;
 }) {
   return (
     <section className="app-info-page" aria-label="Settings">
@@ -43,6 +49,37 @@ export default function SettingsPanel({
       </header>
 
       <div className="app-info-grid">
+        <article className="app-info-card theme-card">
+          <div className="app-info-card-head">
+            <span className="app-info-icon">
+              {theme === "light" ? <Sun size={20} /> : <Moon size={20} />}
+            </span>
+            <div>
+              <b>Appearance</b>
+              <small>{theme.toUpperCase()} THEME</small>
+            </div>
+          </div>
+          <p>Choose the interface theme. Your preference is saved on this device.</p>
+          <div className="theme-options" role="group" aria-label="App theme">
+            <button
+              type="button"
+              className={theme === "light" ? "selected" : ""}
+              aria-pressed={theme === "light"}
+              onClick={() => onThemeChange("light")}
+            >
+              <Sun size={14} /> Light
+            </button>
+            <button
+              type="button"
+              className={theme === "dark" ? "selected" : ""}
+              aria-pressed={theme === "dark"}
+              onClick={() => onThemeChange("dark")}
+            >
+              <Moon size={14} /> Dark
+            </button>
+          </div>
+        </article>
+
         <article className="app-info-card app-info-card-accent">
           <div className="app-info-card-head">
             <span className="app-info-icon">

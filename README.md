@@ -78,7 +78,7 @@ If songs still fail on your host, the IP is being challenged. In order of reliab
 3. Make sure a JavaScript runtime is available. The Docker image uses Node 22 and sets `YT_DLP_JS_RUNTIME=node`.
 4. If the whole IP range is blocked, move the API to a host with a residential/clean IP or route `yt-dlp` through a proxy.
 
-For Vercel, set `NEXT_PUBLIC_API_URL` to the backend origin (for example `https://alhan-dj-deck-1.onrender.com`). The browser uses same-origin `/api` requests, and the Next.js rewrite forwards them to that backend to avoid browser CORS failures. On the backend, set `FRONTEND_URL` to the exact frontend origin without a trailing slash (for example `https://alhan-8d-music-1.vercel.app`); trailing slashes are now normalized automatically.
+For production, set `NEXT_PUBLIC_API_URL` to the backend origin (for example `https://alhan-dj-deck-1.onrender.com`). Browser API and audio-stream requests use that origin directly so installed PWAs do not depend on frontend rewrite routing. The backend must allow the frontend origin through `FRONTEND_URL` (Vercel origins are also allowed); trailing slashes are normalized automatically.
 
 ## Audio engine
 
