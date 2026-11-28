@@ -467,6 +467,46 @@ test("routes 8D streaming through its existing effects graph", async () => {
   }
 });
 
+test("loads device audio locally and revokes its object URL when replaced", async () => {
+  const originalAudio = globalThis.Audio;
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
+  const revokedUrls = [];
+  let objectUrlNumber = 0;
+  globalThis.Audio = FakeAudioElement;
+  URL.createObjectURL = () => `blob:local-audio-${++objectUrlNumber}`;
+  URL.revokeObjectURL = (url) => revokedUrls.push(url);
+  try {
+    const context = new FakeAudioContext();
+    const engine = new EightDMusicEngine(context, new FakeNode());
+    await engine.loadFile({ name: "phone-track.mp3" });
+
+    assert.equal(
+      context.mediaElementSources[0].mediaElement.src,
+      "blob:local-audio-1",
+    );
+    assert.equal(engine.getSnapshot().title, "phone-track");
+    assert.equal(engine.getSnapshot().channelTitle, "Your device");
+    assert.equal(engine.getSnapshot().trackId, null);
+    assert.deepEqual(revokedUrls, []);
+
+    await engine.loadUrl("/api/stream/abcdefghijk", "Streaming track", {
+      id: "abcdefghijk",
+      channelTitle: "Artist",
+      thumbnail: "",
+    });
+    assert.deepEqual(revokedUrls, ["blob:local-audio-1"]);
+    await engine.loadFile({ name: "another-track.wav" });
+    engine.dispose();
+    assert.deepEqual(revokedUrls, ["blob:local-audio-1", "blob:local-audio-2"]);
+  } finally {
+    URL.createObjectURL = originalCreateObjectURL;
+    URL.revokeObjectURL = originalRevokeObjectURL;
+    if (originalAudio === undefined) delete globalThis.Audio;
+    else globalThis.Audio = originalAudio;
+  }
+});
+
 test("routes audio directly to the destination if the hall impulse fails", async () => {
   const originalAudio = globalThis.Audio;
   const originalConsoleError = console.error;

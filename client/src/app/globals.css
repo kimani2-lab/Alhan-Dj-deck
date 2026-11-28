@@ -439,6 +439,13 @@ button:focus-visible, input:focus-visible { outline: 1px solid var(--cyan); outl
   font-size: 8px;
   letter-spacing: .06em;
 }
+.local-audio-import { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.local-audio-import > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.local-audio-import b { color: #d5dfe3; font-size: 8px; letter-spacing: .08em; }
+.local-audio-import small { color: #7a8790; font-size: 7px; }
+.local-audio-import button { flex: 0 0 auto; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; border: 1px solid rgba(50,214,203,.35); border-radius: 4px; color: var(--cyan); background: rgba(50,214,203,.07); font-size: 7px; font-weight: 700; letter-spacing: .06em; cursor: pointer; }
+.local-audio-import button:disabled { opacity: .6; cursor: wait; }
+.local-audio-error { flex: 0 0 auto; margin: 0; padding: 7px 12px; color: #f3a5a5; font-size: 8px; }
 .taste-genre-filters {
   flex: 0 0 auto;
   display: flex;
@@ -2225,6 +2232,9 @@ button:focus-visible, input:focus-visible { outline: 1px solid var(--cyan); outl
 :root[data-theme="light"] .queue-track,
 :root[data-theme="light"] .search-result-track,
 :root[data-theme="light"] .alhan-recent-row { border-color: var(--line); }
+:root[data-theme="light"] .local-audio-import b { color: var(--text); }
+:root[data-theme="light"] .local-audio-import small { color: var(--muted); }
+:root[data-theme="light"] .local-audio-error { color: #a12e38; }
 :root[data-theme="light"] .queue-track.current { background: color-mix(in srgb, var(--cyan) 8%, white); }
 :root[data-theme="light"] .ecosystem-seed,
 :root[data-theme="light"] .queue-library-link,

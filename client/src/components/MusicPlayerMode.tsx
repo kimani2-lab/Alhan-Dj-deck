@@ -250,6 +250,9 @@ export default function MusicPlayerMode({
   onDownload: (track: TrackResult) => void;
 }) {
   const [scrubPosition, setScrubPosition] = useState<number | null>(null);
+  const [localAudioLoading, setLocalAudioLoading] = useState(false);
+  const [localAudioError, setLocalAudioError] = useState("");
+  const localAudioInputRef = useRef<HTMLInputElement>(null);
   const activeSnapshot = eightDSnapshot ?? snapshot;
   const trebleMuted = eightDSnapshot?.trebleMuted ?? false;
   const currentBpm = eightDSnapshot?.bpm ?? 120;
@@ -507,6 +510,57 @@ export default function MusicPlayerMode({
               <FolderOpen size={14} /> LIBRARY
             </button>
           </div>
+          <input
+            ref={localAudioInputRef}
+            hidden
+            type="file"
+            accept="audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg"
+            aria-label="Choose an audio file from your device"
+            onChange={async (event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (!file || !eightDEngine) return;
+
+              setLocalAudioError("");
+              setLocalAudioLoading(true);
+              onActivatePlayback();
+              try {
+                await eightDEngine.resume();
+                await eightDEngine.loadFile(file);
+                eightDEngine.play();
+                onDeckChange();
+              } catch {
+                setLocalAudioError(
+                  "That audio file couldn't be opened. Try another file from your device.",
+                );
+              } finally {
+                setLocalAudioLoading(false);
+              }
+            }}
+          />
+          <div className="local-audio-import">
+            <div>
+              <b>PLAY FROM YOUR DEVICE</b>
+              <small>Choose an audio file. It stays on your device.</small>
+            </div>
+            <button
+              type="button"
+              onClick={() => localAudioInputRef.current?.click()}
+              disabled={!eightDEngine || localAudioLoading}
+            >
+              {localAudioLoading ? (
+                <LoaderCircle className="spinner" size={14} />
+              ) : (
+                <FolderOpen size={14} />
+              )}
+              {localAudioLoading ? "LOADING" : "OPEN SONG"}
+            </button>
+          </div>
+          {localAudioError && (
+            <p className="local-audio-error" role="alert">
+              {localAudioError}
+            </p>
+          )}
           {tasteProfile && (
             <div className="taste-genre-filters" aria-label="Taste genre filters">
               <button

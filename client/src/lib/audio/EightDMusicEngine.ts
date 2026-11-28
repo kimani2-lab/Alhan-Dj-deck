@@ -45,6 +45,7 @@ export class EightDMusicEngine {
   private readonly bpmTracker = new LiveBpmTracker();
   private mediaElement: HTMLAudioElement | null = null;
   private mediaElementSource: MediaElementAudioSourceNode | null = null;
+  private mediaObjectUrl: string | null = null;
   private directOutputFallback = false;
   private durationHint = 0;
   private title = "No track loaded";
@@ -160,17 +161,22 @@ export class EightDMusicEngine {
   }
 
   private clearMediaElement(): void {
-    if (!this.mediaElement) return;
-    this.mediaElement.pause();
-    this.mediaElement.removeAttribute("src");
-    this.mediaElement.load();
+    if (this.mediaElement) {
+      this.mediaElement.pause();
+      this.mediaElement.removeAttribute("src");
+      this.mediaElement.load();
+    }
+    if (this.mediaObjectUrl) {
+      URL.revokeObjectURL(this.mediaObjectUrl);
+      this.mediaObjectUrl = null;
+    }
   }
 
   async loadUrl(
     url: string,
     title: string,
     metadata: {
-      id: string;
+      id: string | null;
       channelTitle: string;
       thumbnail: string;
       duration?: number;
@@ -198,6 +204,22 @@ export class EightDMusicEngine {
     this.trackId = metadata.id;
     this.channelTitle = metadata.channelTitle;
     this.thumbnail = metadata.thumbnail;
+  }
+
+  async loadFile(file: File): Promise<void> {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const title = file.name.replace(/\.[^.]+$/, "") || file.name;
+      await this.loadUrl(objectUrl, title, {
+        id: null,
+        channelTitle: "Your device",
+        thumbnail: "",
+      });
+      this.mediaObjectUrl = objectUrl;
+    } catch (error) {
+      URL.revokeObjectURL(objectUrl);
+      throw error;
+    }
   }
 
   play(): void {
