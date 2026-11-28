@@ -149,6 +149,10 @@ export class Deck {
     this.setVolume(this.volume);
   }
 
+  async resume(): Promise<void> {
+    if (this.context.state === "suspended") await this.context.resume();
+  }
+
   get duration(): number {
     if (!this.streaming) return this.buffer?.duration ?? 0;
     return Number.isFinite(this.mediaElement?.duration)
@@ -307,18 +311,21 @@ export class Deck {
     this.hotCues = Array(8).fill(null);
   }
 
-  play(): void {
+  async play(): Promise<void> {
     if (this.streaming && this.mediaElement) {
       if (this.duration > 0 && this.mediaElement.currentTime >= this.duration) {
         this.mediaElement.currentTime = 0;
       }
+      await this.resume();
       this.playing = true;
-      void this.mediaElement.play().catch((reason: unknown) => {
+      try {
+        await this.mediaElement.play();
+      } catch (reason: unknown) {
         this.playing = false;
         this.onPlaybackError?.(
           reason instanceof Error ? reason : new Error("Audio playback could not start."),
         );
-      });
+      }
       return;
     }
     if (!this.buffer || this.playing) return;
@@ -370,7 +377,7 @@ export class Deck {
 
   togglePlayback(): void {
     if (this.playing) this.pause();
-    else this.play();
+    else void this.play();
   }
 
   seek(seconds: number): void {

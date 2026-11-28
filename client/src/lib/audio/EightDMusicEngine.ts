@@ -179,18 +179,21 @@ export class EightDMusicEngine {
     this.thumbnail = metadata.thumbnail;
   }
 
-  play(): void {
+  async play(): Promise<void> {
     if (!this.streaming || !this.mediaElement || this.playing) return;
     if (this.duration > 0 && this.mediaElement.currentTime >= this.duration) {
       this.mediaElement.currentTime = 0;
     }
+    await this.resume();
     this.playing = true;
-    void this.mediaElement.play().catch((reason: unknown) => {
+    try {
+      await this.mediaElement.play();
+    } catch (reason: unknown) {
       this.playing = false;
       this.onPlaybackError?.(
         reason instanceof Error ? reason : new Error("Audio playback could not start."),
       );
-    });
+    }
   }
 
   pause(): void {
@@ -201,7 +204,7 @@ export class EightDMusicEngine {
 
   togglePlayback(): void {
     if (this.playing) this.pause();
-    else this.play();
+    else void this.play();
   }
 
   seek(position: number): void {
