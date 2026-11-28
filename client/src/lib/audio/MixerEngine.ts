@@ -1,8 +1,5 @@
 import { Deck, type DeckId } from "./Deck";
-import {
-  installAudioUnlockHandlers,
-  resumeAudioContext,
-} from "./audioSession.ts";
+import { installAudioUnlockHandlers } from "./audioSession.ts";
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -18,6 +15,7 @@ export class MixerEngine {
   private readonly limiter: DynamicsCompressorNode;
   private readonly crossfadeA: GainNode;
   private readonly crossfadeB: GainNode;
+  private readonly removeAudioUnlockHandlers: () => void;
   private crossfaderPosition = 0;
   private masterVolume = 1;
 
@@ -27,6 +25,7 @@ export class MixerEngine {
       new AudioContext({
         latencyHint: "interactive",
       });
+    this.removeAudioUnlockHandlers = installAudioUnlockHandlers(this.context);
     this.master = this.context.createGain();
     this.masterInput = this.master;
     this.limiter = this.context.createDynamicsCompressor();
@@ -57,7 +56,9 @@ export class MixerEngine {
   }
 
   async resume(): Promise<void> {
-    if (this.context.state === "suspended") await this.context.resume();
+    if (this.context.state !== "running" && this.context.state !== "closed") {
+      await this.context.resume();
+    }
   }
 
   getDeck(id: DeckId): Deck {
@@ -125,6 +126,7 @@ export class MixerEngine {
   }
 
   dispose(): void {
+    this.removeAudioUnlockHandlers();
     this.deckA.dispose();
     this.deckB.dispose();
     this.crossfadeA.disconnect();

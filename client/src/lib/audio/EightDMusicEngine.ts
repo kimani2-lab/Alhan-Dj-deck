@@ -6,6 +6,10 @@ import {
   createBassEnhancement,
   type BassEnhancement,
 } from "./bassEnhancement.ts";
+import {
+  attachMediaElementToDocument,
+  detachMediaElementFromDocument,
+} from "./audioSession.ts";
 import { getMediaElementSource } from "./mediaElementSource.ts";
 import { LiveBpmTracker, orbitSpeedForBpm } from "./bpm.ts";
 
@@ -112,7 +116,9 @@ export class EightDMusicEngine {
   }
 
   async resume(): Promise<void> {
-    if (this.context.state === "suspended") await this.context.resume();
+    if (this.context.state !== "running" && this.context.state !== "closed") {
+      await this.context.resume();
+    }
   }
 
   private createMediaElement(): HTMLAudioElement {
@@ -135,6 +141,7 @@ export class EightDMusicEngine {
         ),
       );
     });
+    attachMediaElementToDocument(element);
     this.mediaElement = element;
     this.mediaElementSource = getMediaElementSource(this.context, element);
     this.mediaElementSource.connect(this.sourceOutput);
@@ -407,6 +414,7 @@ export class EightDMusicEngine {
     this.clearMediaElement();
     this.mediaElementSource?.disconnect();
     this.mediaElementSource = null;
+    detachMediaElementFromDocument(this.mediaElement);
     this.mediaElement = null;
     this.sourceOutput.disconnect();
     this.trebleFilter.disconnect();

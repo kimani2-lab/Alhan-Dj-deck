@@ -8,7 +8,7 @@ type AudioSessionNavigator = Navigator & {
 };
 
 const lastResumeAttempt = new WeakMap<AudioContext, number>();
-const unlockInstalled = new WeakSet<AudioContext>();
+const unlockCleanups = new WeakMap<AudioContext, () => void>();
 let silentAudio: HTMLAudioElement | null = null;
 let mediaUnlockPending = false;
 let mediaUnlocked = false;
@@ -80,15 +80,17 @@ export function unlockMediaPlayback(): void {
   }
 }
 
-export function installAudioUnlockHandlers(context: AudioContext): void {
+export function installAudioUnlockHandlers(
+  context: AudioContext,
+): () => void {
   if (
     typeof window === "undefined" ||
-    typeof document === "undefined" ||
-    unlockInstalled.has(context)
+    typeof document === "undefined"
   ) {
-    return;
+    return () => {};
   }
-  unlockInstalled.add(context);
+  const existingCleanup = unlockCleanups.get(context);
+  if (existingCleanup) return existingCleanup;
 
   const unlock = () => {
     ensurePlaybackAudioSession();
@@ -108,12 +110,30 @@ export function installAudioUnlockHandlers(context: AudioContext): void {
       passive: true,
     });
   }
-
-  document.addEventListener("visibilitychange", () => {
+  const onVisibilityChange = () => {
     if (document.visibilityState === "visible") unlock();
-  });
+  };
+  document.addEventListener("visibilitychange", onVisibilityChange);
   window.addEventListener("pageshow", unlock);
   window.addEventListener("focus", unlock);
+
+  const cleanup = () => {
+    for (const eventName of [
+      "pointerdown",
+      "touchstart",
+      "touchend",
+      "keydown",
+      "click",
+    ]) {
+      window.removeEventListener(eventName, unlock, true);
+    }
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    window.removeEventListener("pageshow", unlock);
+    window.removeEventListener("focus", unlock);
+    unlockCleanups.delete(context);
+  };
+  unlockCleanups.set(context, cleanup);
+  return cleanup;
 }
 
 export function attachMediaElementToDocument(element: HTMLAudioElement): void {
@@ -121,7 +141,12 @@ export function attachMediaElementToDocument(element: HTMLAudioElement): void {
   element.setAttribute("playsinline", "true");
   element.setAttribute("webkit-playsinline", "true");
   if (element.isConnected) return;
-  element.style.display = "none";
+  element.style.position = "fixed";
+  element.style.width = "1px";
+  element.style.height = "1px";
+  element.style.opacity = "0";
+  element.style.pointerEvents = "none";
+  element.style.overflow = "hidden";
   element.setAttribute("aria-hidden", "true");
   document.body.appendChild(element);
 }

@@ -6,6 +6,10 @@ import {
   createBassEnhancement,
   type BassEnhancement,
 } from "./bassEnhancement.ts";
+import {
+  attachMediaElementToDocument,
+  detachMediaElementFromDocument,
+} from "./audioSession.ts";
 import { getMediaElementSource } from "./mediaElementSource.ts";
 import { detectBpm, LiveBpmTracker, orbitSpeedForBpm } from "./bpm.ts";
 
@@ -222,6 +226,7 @@ export class Deck {
         ),
       );
     });
+    attachMediaElementToDocument(element);
     this.mediaElement = element;
     this.mediaElementSource = getMediaElementSource(this.context, element);
     this.mediaElementSource.connect(this.low);
@@ -670,6 +675,7 @@ export class Deck {
     this.clearMediaElement();
     this.mediaElementSource?.disconnect();
     this.mediaElementSource = null;
+    detachMediaElementFromDocument(this.mediaElement);
     this.mediaElement = null;
     this.low.disconnect();
     this.padInput.disconnect();
