@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile, chmod, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { writeFile, chmod, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import os from "node:os";
@@ -844,6 +844,14 @@ function sanitizeDownloadFilename(title, videoId) {
   return `${cleaned || fallback}.mp3`;
 }
 
+function findCachedTrackTitle(videoId) {
+  for (const entry of searchCache.values()) {
+    const track = entry?.value?.find((item) => item.id === videoId);
+    if (track?.title) return track.title;
+  }
+  return null;
+}
+
 app.get("/api/download", (request, response, next) => {
   const videoId = String(request.query.id ?? "");
   if (!/^[\w-]{11}$/.test(videoId)) {
@@ -851,28 +859,23 @@ app.get("/api/download", (request, response, next) => {
     return;
   }
 
-  const filename = sanitizeDownloadFilename(request.query.title, videoId);
+  const title = findCachedTrackTitle(videoId) ?? request.query.title;
+  const filename = sanitizeDownloadFilename(title, videoId);
   setStreamCorsHeaders(request, response);
 
   void (async () => {
     let child;
     let settled = false;
-    let tempDirectory;
     let stderr = "";
 
     const cleanup = () => {
       response.removeListener("close", onResponseClose);
-      if (child && child.exitCode === null && !child.killed) {
+      if (child && !child.killed && child.exitCode === null) {
         try {
-          child.kill("SIGKILL");
+          child.kill("SIGTERM");
         } catch {
           // The process may already have exited.
         }
-      }
-      if (tempDirectory) {
-        void rm(tempDirectory, { recursive: true, force: true }).catch((error) => {
-          console.error("[download] Temporary file cleanup failed.", error);
-        });
       }
     };
 
@@ -883,8 +886,18 @@ app.get("/api/download", (request, response, next) => {
       const failure =
         error instanceof Error ? error : new Error("MP3 download failed.");
       failure.videoId = videoId;
+      failure.code = "DOWNLOAD_FAILED";
       if (stderr) failure.stderr = stderr;
-      next(failure);
+      if (!response.headersSent) {
+        next(failure);
+      } else {
+        console.error("[download] Stream failed after headers were sent.", {
+          videoId,
+          error: failure,
+          stderr,
+        });
+        if (!response.destroyed) response.destroy(failure);
+      }
     };
 
     const onResponseClose = () => {
@@ -899,10 +912,8 @@ app.get("/api/download", (request, response, next) => {
     response.once("close", onResponseClose);
 
     try {
-      tempDirectory = await mkdtemp(path.join(os.tmpdir(), "alhan-dj-download-"));
-      const outputPath = path.join(tempDirectory, `${videoId}.mp3`);
       const { streamUrl } = await resolveStreamUrl(videoId);
-      if (response.destroyed) return;
+      if (settled || response.destroyed) return;
 
       const ffmpegHeaders =
         "Referer: https://www.youtube.com/\r\nAccept-Encoding: identity\r\n";
@@ -931,35 +942,46 @@ app.get("/api/download", (request, response, next) => {
         { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
       );
 
+      const started = new Promise((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+      const closed = new Promise((resolve) => {
+        child.once("close", (code, signal) => resolve({ code, signal }));
+      });
       child.stderr?.on("data", (chunk) => {
         stderr += chunk.toString();
         if (stderr.length > 8_000) stderr = stderr.slice(-8_000);
       });
 
-      const [exitCode] = await Promise.all([
-        new Promise((resolve, reject) => {
-          child.once("error", reject);
-          child.once("close", resolve);
-        }),
-        pipeline(child.stdout, createWriteStream(outputPath)),
-      ]);
-      if (exitCode !== 0) {
-        throw new Error(`ffmpeg exited with status ${exitCode ?? "unknown"}.`);
-      }
+      await started;
+      if (settled || response.destroyed) return;
 
-      const output = await stat(outputPath);
-      if (output.size === 0) throw new Error("ffmpeg produced no audio.");
-      if (response.destroyed) return;
-
+      response.status(200);
       response.setHeader("Content-Type", "audio/mpeg");
       response.setHeader("Cache-Control", "no-store");
-      response.setHeader("Content-Length", String(output.size));
       response.setHeader(
         "Content-Disposition",
         `attachment; filename="${filename}"`,
       );
-      await pipeline(createReadStream(outputPath), response);
+      if (typeof response.flushHeaders === "function") response.flushHeaders();
+
+      await new Promise((resolve, reject) => {
+        child.stdout.once("end", resolve);
+        child.stdout.once("error", reject);
+        child.stdout.pipe(response, { end: false });
+      });
+
+      const { code, signal } = await closed;
+      if (response.destroyed) return;
+      if (code !== 0) {
+        throw new Error(
+          stderr.trim() || `ffmpeg exited with status ${code ?? signal ?? "unknown"}.`,
+        );
+      }
       settled = true;
+      cleanup();
+      response.end();
     } catch (error) {
       fail(error);
     } finally {

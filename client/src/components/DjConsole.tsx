@@ -780,6 +780,7 @@ function DeckPanel({
 export default function DjConsole() {
   const engineRef = useRef<MixerEngine | null>(null);
   const activeMediaSourceRef = useRef<MediaPlaybackSource>("eightD");
+  const voiceDuckVolumeRef = useRef<number | null>(null);
   const [activeMediaSource, setActiveMediaSource] =
     useState<MediaPlaybackSource>("eightD");
   const [engine, setEngine] = useState<MixerEngine | null>(null);
@@ -995,6 +996,21 @@ export default function DjConsole() {
     const eightD = eightDEngineRef.current;
     if (eightD) setEightDSnapshot(eightD.getSnapshot());
   }, []);
+  const duckVoicePlayback = useCallback(() => {
+    const eightD = eightDEngineRef.current;
+    if (!eightD || voiceDuckVolumeRef.current !== null) return;
+    const volume = eightD.getSnapshot().volume;
+    voiceDuckVolumeRef.current = volume;
+    eightD.setVolume(volume * 0.75);
+    refresh();
+  }, [refresh]);
+  const restoreVoicePlayback = useCallback(() => {
+    const volume = voiceDuckVolumeRef.current;
+    if (volume === null) return;
+    voiceDuckVolumeRef.current = null;
+    eightDEngineRef.current?.setVolume(volume);
+    refresh();
+  }, [refresh]);
   const activateMediaSource = useCallback((source: MediaPlaybackSource) => {
     activeMediaSourceRef.current = source;
     setActiveMediaSource(source);
@@ -1814,9 +1830,9 @@ export default function DjConsole() {
   }, [loadEightDMusicTrack, queueManager, refresh, refreshEcosystemQueue]);
 
   const playTrackIn8D = useCallback(
-    async (track: TrackResult) => {
+    async (track: TrackResult): Promise<boolean> => {
       refillAttempts.current = 0;
-      if (!(await playEcosystemTrack(track))) return;
+      if (!(await playEcosystemTrack(track))) return false;
       explicitEcosystemSeedRef.current = null;
       autoPlayClearedTrackRef.current = null;
       queueManager.setSeed(track);
@@ -1824,6 +1840,7 @@ export default function DjConsole() {
       refreshEcosystemQueue();
       setMode("music");
       void fetchEcosystemCandidates(track);
+      return true;
     },
     [
       fetchEcosystemCandidates,
@@ -2671,7 +2688,9 @@ export default function DjConsole() {
           onSearch={(event) => void searchYoutube(event)}
           searching={searching}
           loadingId={loadingId}
-          onPlayTrack={playTrackIn8D}
+          onPlayTrack={async (track) => {
+            await playTrackIn8D(track);
+          }}
           onActivatePlayback={() => activateMediaSource("eightD")}
           ecosystemQueue={ecosystemQueue}
           onSeedTrack={seedEcosystem}
@@ -2794,11 +2813,14 @@ export default function DjConsole() {
         onClose={() => setAiOpen(false)}
         onLoadTrack={loadAiTrack}
         onPlayIn8D={playAiTrackIn8D}
+        onPlayVoiceTrack={playTrackIn8D}
         onRunSet={(items) => void runAiSet(items)}
         aiQueue={aiQueue}
         aiQueueIndex={aiQueueIndex}
         onStopSet={stopAiSet}
         tasteProfile={tasteProfile}
+        onVoiceVolumeDuck={duckVoicePlayback}
+        onVoiceVolumeRestore={restoreVoicePlayback}
       />
 
       <footer className="bottom-bar">

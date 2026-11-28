@@ -59,13 +59,14 @@ export default function AiDjPanel({
   onClose,
   onLoadTrack,
   onPlayIn8D,
+  onPlayVoiceTrack,
   onRunSet,
   aiQueue,
   aiQueueIndex,
   onStopSet,
   tasteProfile,
-  onDuckVolume,
-  onRestoreVolume,
+  onVoiceVolumeDuck,
+  onVoiceVolumeRestore,
 }: {
   open: boolean;
   mode: AiMode;
@@ -80,13 +81,14 @@ export default function AiDjPanel({
     fx: DeckFx,
   ) => Promise<boolean>;
   onPlayIn8D: (track: TrackResult, fx: DeckFx) => Promise<boolean>;
+  onPlayVoiceTrack: (track: TrackResult) => Promise<boolean>;
   onRunSet: (items: AiSetQueueItem[]) => void;
   aiQueue: AiSetQueueItem[];
   aiQueueIndex: number;
   onStopSet: () => void;
   tasteProfile: TasteProfile | null;
-  onDuckVolume?: () => void;
-  onRestoreVolume?: () => void;
+  onVoiceVolumeDuck: () => void;
+  onVoiceVolumeRestore: () => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [setlist, setSetlist] = useState<string[]>([]);
@@ -103,12 +105,11 @@ export default function AiDjPanel({
   );
   const busyRef = useRef(false);
   const voice = useAlhanVoiceAssistant({
-    active: activated,
+    active: open && activated,
     searchTracks,
-    onPlayTrack: (track) =>
-      onPlayIn8D(track, { enable8d: true, bassBoost: false }),
-    onDuckVolume,
-    onRestoreVolume,
+    onPlayTrack: onPlayVoiceTrack,
+    onDuckVolume: onVoiceVolumeDuck,
+    onRestoreVolume: onVoiceVolumeRestore,
     onCommand: setPrompt,
     onError: setError,
   });
@@ -455,7 +456,7 @@ export default function AiDjPanel({
                   : "Voice control isn't supported in this browser."
               }
             >
-              {voice.enabled ? "VOICE WAKE: ON" : "VOICE WAKE: OFF"}
+              <Mic size={12} /> Voice Wake: {voice.enabled ? "ON" : "OFF"}
             </button>
           </div>
 

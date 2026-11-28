@@ -85,14 +85,16 @@ export function useAlhanVoiceAssistant({
     onCommand,
     onError,
   });
-  optionsRef.current = {
-    searchTracks,
-    onPlayTrack,
-    onDuckVolume,
-    onRestoreVolume,
-    onCommand,
-    onError,
-  };
+  useEffect(() => {
+    optionsRef.current = {
+      searchTracks,
+      onPlayTrack,
+      onDuckVolume,
+      onRestoreVolume,
+      onCommand,
+      onError,
+    };
+  }, [searchTracks, onPlayTrack, onDuckVolume, onRestoreVolume, onCommand, onError]);
 
   const enabledRef = useRef(false);
   const stateRef = useRef<AlhanVoiceState>("WAKE_LISTENING");
@@ -265,7 +267,7 @@ export function useAlhanVoiceAssistant({
     ],
   );
 
-  const handleWake = useCallback(() => {
+  const handleWake = useCallback((inlineCommand?: string) => {
     if (stateRef.current !== "WAKE_LISTENING") return;
 
     updateStatus("Yes, how may I help you?");
@@ -280,12 +282,17 @@ export function useAlhanVoiceAssistant({
         return;
       }
       updateState("AWAITING_COMMAND");
-      updateStatus("Listening for song...");
       speechPausedRef.current = false;
+      if (inlineCommand) {
+        handleCommand(inlineCommand);
+        return;
+      }
+      updateStatus("Listening for song...");
       scheduleRestart();
     });
   }, [
     duckVolume,
+    handleCommand,
     restoreVolume,
     scheduleRestart,
     speak,
@@ -308,7 +315,7 @@ export function useAlhanVoiceAssistant({
         if (!hasWakeWord) return;
         const inlineCommand = cleanCommand(withoutWakeWord);
         if (inlineCommand) {
-          handleCommand(inlineCommand);
+          handleWake(inlineCommand);
           return;
         }
         handleWake();
