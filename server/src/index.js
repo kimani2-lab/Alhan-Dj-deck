@@ -10,6 +10,7 @@ import express from "express";
 import {
   audioErrorMiddleware,
   createAudioError,
+  isClientAbortError,
 } from "./apiErrors.js";
 import { registerAiDjRoutes } from "./aiDj.js";
 import {
@@ -17,6 +18,7 @@ import {
   parseResolvedStreamUrl,
   StreamUrlCache,
 } from "./streamUrlCache.js";
+import { setAudioCorsHeaders } from "./audioCors.js";
 import {
   AUDIO_FALLBACK_FORMAT,
   AUDIO_FIRST_FORMAT,
@@ -26,7 +28,12 @@ import { createConcurrencyLimiter } from "./ytDlpLimiter.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 5000);
-const STREAM_PLAYER_CLIENTS = "web_safari,ios,tv_embedded,default";
+const STREAM_FAST_PLAYER_CLIENTS =
+  process.env.YT_DLP_STREAM_FAST_CLIENT?.trim() || "tv_embedded";
+const STREAM_FALLBACK_PLAYER_CLIENTS =
+  process.env.YT_DLP_STREAM_FALLBACK_CLIENTS?.trim() ||
+  "web_safari,ios,tv_embedded,default";
+const STREAM_FAST_TIMEOUT_MS = 20_000;
 const runWithYtDlpSlot = createConcurrencyLimiter(2);
 const frontendUrl = process.env.FRONTEND_URL?.trim();
 const normalizeOrigin = (origin) => origin.trim().replace(/\/+$/, "");
@@ -218,20 +225,6 @@ function logYtDlpFailure(operation, stderr) {
     `[yt-dlp] ${operation} failed; exact stderr follows:\n${
       stderr || "(empty stderr)"
     }`,
-  );
-}
-
-function setStreamCorsHeaders(request, response) {
-  const origin = request.headers.origin;
-  if (isAllowedOrigin(origin)) {
-    response.setHeader("Access-Control-Allow-Origin", origin || "*");
-    if (origin) response.setHeader("Vary", "Origin");
-  }
-  response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
-  response.setHeader("Accept-Ranges", "none");
-  response.setHeader(
-    "Access-Control-Expose-Headers",
-    "Accept-Ranges, Content-Range, Content-Length, Content-Type",
   );
 }
 
@@ -614,34 +607,65 @@ async function resolveStreamUrl(videoId) {
   }
 
   const resolution = (async () => {
-    const args = [
+    const buildArgs = (playerClients) => [
       ...getYtDlpBaseArgs({ includeSleepRequests: false }),
       "--no-playlist",
       "--no-check-certificates",
       "-f",
       AUDIO_FIRST_FORMAT,
       "--extractor-args",
-      `youtube:player_client=${STREAM_PLAYER_CLIENTS}`,
+      `youtube:player_client=${playerClients}`,
       "--get-url",
       `https://www.youtube.com/watch?v=${videoId}`,
     ];
     let formatFallbackUsed = false;
-    const output = await runWithAudioFormatFallback(
-      args,
-      (attemptArgs, isFallback) =>
-        runYtDlp(
-          attemptArgs,
-          50_000,
-          isFallback ? "stream-resolve-format-fallback" : "stream-resolve",
-          YT_DLP_PRIORITY.stream,
-        ),
-      () => {
-        formatFallbackUsed = true;
-        console.warn(
-          `[yt-dlp] stream-resolve format unavailable for ${videoId}; retry=1/1; selector=${AUDIO_FALLBACK_FORMAT}; --no-check-formats enabled.`,
-        );
-      },
-    );
+    const resolveWithClients = async (
+      playerClients,
+      operation,
+      timeoutMs = 50_000,
+    ) => {
+      formatFallbackUsed = false;
+      return runWithAudioFormatFallback(
+        buildArgs(playerClients),
+        (attemptArgs, isFallback) =>
+          runYtDlp(
+            attemptArgs,
+            timeoutMs,
+            isFallback ? `${operation}-format-fallback` : operation,
+            YT_DLP_PRIORITY.stream,
+          ),
+        () => {
+          formatFallbackUsed = true;
+          console.warn(
+            `[yt-dlp] stream-resolve format unavailable for ${videoId}; retry=1/1; player_client=${playerClients}; selector=${AUDIO_FALLBACK_FORMAT}; --no-check-formats enabled.`,
+          );
+        },
+      );
+    };
+
+    let usedPlayerClients = STREAM_FAST_PLAYER_CLIENTS;
+    let output;
+    try {
+      output = await resolveWithClients(
+        STREAM_FAST_PLAYER_CLIENTS,
+        "stream-resolve-fast",
+        STREAM_FAST_TIMEOUT_MS,
+      );
+    } catch (fastError) {
+      usedPlayerClients = STREAM_FALLBACK_PLAYER_CLIENTS;
+      console.warn(
+        `[yt-dlp] stream-resolve fast client failed for ${videoId}; player_client=${STREAM_FAST_PLAYER_CLIENTS}; elapsedMs=${
+          Date.now() - startedAt
+        }; retrying with player_client=${STREAM_FALLBACK_PLAYER_CLIENTS}; error=${
+          fastError instanceof Error ? fastError.message : "unknown error"
+        }.`,
+      );
+      output = await resolveWithClients(
+        STREAM_FALLBACK_PLAYER_CLIENTS,
+        "stream-resolve-fallback",
+      );
+    }
+
     const streamUrl = parseResolvedStreamUrl(output);
     const metadata = getResolvedStreamMetadata(streamUrl);
     const resolvedUrlHost = new URL(streamUrl).hostname;
@@ -654,7 +678,7 @@ async function resolveStreamUrl(videoId) {
             ? "mp3"
             : "unknown";
     console.info(
-      `[yt-dlp] stream-resolve succeeded; player_client=${STREAM_PLAYER_CLIENTS}; resolved_url_host=${resolvedUrlHost}; format=${
+      `[yt-dlp] stream-resolve succeeded; player_client=${usedPlayerClients}; resolved_url_host=${resolvedUrlHost}; format=${
         formatFallbackUsed ? AUDIO_FALLBACK_FORMAT : AUDIO_FIRST_FORMAT
       }; extension=${extension}; mime=${metadata.mimeType}; retry=${formatFallbackUsed ? "fallback" : "none"}.`,
     );
@@ -664,7 +688,7 @@ async function resolveStreamUrl(videoId) {
     });
     const resolveMs = Date.now() - startedAt;
     console.info(
-      `[stream] resolve ${videoId}; cacheHit=false; resolveMs=${resolveMs}.`,
+      `[stream] resolve ${videoId}; cacheHit=false; player_client=${usedPlayerClients}; resolveMs=${resolveMs}.`,
     );
     return { ...entry, cacheHit: false, resolveMs };
   })();
@@ -727,6 +751,9 @@ async function proxyStreamRequest(request, response, videoId, retryExpiredUrl = 
     });
   } catch (error) {
     response.removeListener("close", abortOnDisconnect);
+    if (isClientAbortError(error, request, response) || controller.signal.aborted) {
+      return;
+    }
     throw error;
   }
 
@@ -781,6 +808,17 @@ async function proxyStreamRequest(request, response, videoId, retryExpiredUrl = 
     } else {
       response.end();
     }
+  } catch (error) {
+    if (isClientAbortError(error, request, response) || controller.signal.aborted) {
+      try {
+        await upstream.body?.cancel();
+      } catch {
+        // The pipeline may already have closed the upstream body.
+      }
+      if (!response.destroyed && !response.writableEnded) response.destroy();
+      return;
+    }
+    throw error;
   } finally {
     response.removeListener("close", abortOnDisconnect);
   }
@@ -827,7 +865,7 @@ app.get("/api/stream/:videoId", async (request, response) => {
           : "not configured"
     }.`,
   );
-  setStreamCorsHeaders(request, response);
+  setAudioCorsHeaders(response);
   response.setHeader("Accept-Ranges", "bytes");
   await proxyStreamRequest(request, response, videoId);
 });
@@ -861,7 +899,7 @@ app.get("/api/download", (request, response, next) => {
 
   const title = findCachedTrackTitle(videoId) ?? request.query.title;
   const filename = sanitizeDownloadFilename(title, videoId);
-  setStreamCorsHeaders(request, response);
+  setAudioCorsHeaders(response);
 
   void (async () => {
     let child;

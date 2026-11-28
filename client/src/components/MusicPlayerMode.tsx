@@ -275,13 +275,12 @@ export default function MusicPlayerMode({
     void onPlayTrack(track);
   };
 
-  const togglePlayback = () => {
+  const togglePlayback = async () => {
     if (!eightDEngine) return;
     onActivatePlayback();
-    void eightDEngine.resume().then(() => {
-      eightDEngine.togglePlayback();
-      onDeckChange();
-    });
+    await eightDEngine.resume();
+    eightDEngine.togglePlayback();
+    onDeckChange();
   };
 
   const setSpatialControl = (
@@ -443,7 +442,7 @@ export default function MusicPlayerMode({
             </div>
           </div>
           <p className="spatial-headphone-note">
-            <Headphones size={12} /> Use headphones for binaural HRTF + hall spatialization.
+            <Headphones size={12} /> Put on headphones for full 360° 8D audio
           </p>
 
           <div className="music-transport">
@@ -473,7 +472,7 @@ export default function MusicPlayerMode({
             />
             <div className="music-transport-buttons">
               <button type="button" aria-label="Previous track" onClick={onPreviousTrack}><SkipBack size={19} /></button>
-              <button className="music-play-button" type="button" aria-label={snapshot.isPlaying ? "Pause" : "Play"} onClick={togglePlayback}>
+              <button className="music-play-button" type="button" aria-label={snapshot.isPlaying ? "Pause" : "Play"} onClick={() => void togglePlayback()}>
                 {snapshot.isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
               </button>
               <button type="button" aria-label="Next track" onClick={onNextTrack}><SkipForward size={19} /></button>

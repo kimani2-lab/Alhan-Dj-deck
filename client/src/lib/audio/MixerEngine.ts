@@ -15,7 +15,7 @@ export class MixerEngine {
   private readonly crossfadeA: GainNode;
   private readonly crossfadeB: GainNode;
   private crossfaderPosition = 0;
-  private masterVolume = 0.82;
+  private masterVolume = 1;
 
   constructor(context?: AudioContext) {
     this.context =

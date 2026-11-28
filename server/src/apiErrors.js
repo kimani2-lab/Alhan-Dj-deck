@@ -37,6 +37,23 @@ export function createAudioError(code) {
   return error;
 }
 
+const CLIENT_ABORT_CODES = new Set([
+  "ERR_STREAM_PREMATURE_CLOSE",
+  "ECONNRESET",
+  "ABORT_ERR",
+]);
+
+export function isClientAbortError(error, request, response) {
+  if (request?.aborted) return true;
+  if (response?.destroyed && !response?.writableEnded) return true;
+
+  const code = error?.code;
+  if (typeof code === "string" && CLIENT_ABORT_CODES.has(code)) return true;
+  if (error?.name === "AbortError") return true;
+
+  return false;
+}
+
 export function classifyAudioError(error) {
   const message =
     error instanceof Error
@@ -97,6 +114,11 @@ function getRawErrorDetails(error) {
 }
 
 export function audioErrorMiddleware(error, request, response, _next) {
+  if (isClientAbortError(error, request, response)) {
+    if (!response.destroyed && !response.writableEnded) response.destroy();
+    return;
+  }
+
   const videoId =
     error?.videoId ??
     request.params?.videoId ??

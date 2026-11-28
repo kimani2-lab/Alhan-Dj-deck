@@ -90,7 +90,7 @@ const BOT_ACTIVATED_KEY = "alhanBotActivated";
 const APP_THEME_KEY = "alhan-dj:theme:v1";
 const APP_THEME_EVENT = "alhan-dj:theme-change";
 const SEARCH_SESSION_CACHE_PREFIX = "alhan-dj:search-cache:v1:";
-const SEARCH_SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
+const SEARCH_SESSION_CACHE_TTL_MS = 15 * 60 * 1000;
 
 function getAppThemeSnapshot(): AppTheme {
   try {
@@ -569,13 +569,12 @@ function DeckPanel({
               className="play-button"
               type="button"
               title={snapshot.isPlaying ? "Pause" : "Play"}
-              onClick={() => {
+              onClick={async () => {
                 if (!engine) return;
                 onActivatePlayback(id);
-                void engine.resume().then(() => {
-                  deck?.togglePlayback();
-                  onChange();
-                });
+                await engine.resume();
+                deck?.togglePlayback();
+                onChange();
               }}
             >
               {snapshot.isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
@@ -771,7 +770,7 @@ function DeckPanel({
         />
       </div>
       <div className="deck-spatial-note">
-        <Headphones size={11} /> Use headphones for binaural HRTF + hall spatialization.
+        <Headphones size={11} /> Put on headphones for full 360° 8D audio
       </div>
     </section>
   );
@@ -823,7 +822,7 @@ export default function DjConsole() {
     queueManager.getSnapshot(),
   );
   const [crossfader, setCrossfader] = useState(0);
-  const [masterVolume, setMasterVolume] = useState(0.82);
+  const [masterVolume, setMasterVolume] = useState(1);
   const [mode, setMode] = useState<AppMode>("home");
   const theme = useSyncExternalStore(
     subscribeToAppTheme,
@@ -1266,6 +1265,7 @@ export default function DjConsole() {
       setLoadingId(track.id);
       setError("");
       try {
+        await eightD.resume();
         await eightD.loadUrl(
           apiUrl(`/api/stream/${encodeURIComponent(track.id)}`),
           track.title,

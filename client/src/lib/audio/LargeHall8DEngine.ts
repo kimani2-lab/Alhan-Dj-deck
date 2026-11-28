@@ -118,6 +118,7 @@ export class LargeHall8DEngine {
   private readonly lfoZ: OscillatorNode;
   private readonly lfoXDepth: GainNode;
   private readonly lfoZDepth: GainNode;
+  private impulseResponseAvailable = false;
   private enabled = false;
   private width = 0.75;
   private speed = 0.12;
@@ -277,13 +278,25 @@ export class LargeHall8DEngine {
     this.lfoX.start();
     this.lfoZ.start();
 
-    this.convolver.buffer = createHallImpulseResponse(
-      context,
-      3.8,
-      HALL_SIZE_PRESETS[this.hallSize].decay,
-    );
+    try {
+      this.convolver.buffer = createHallImpulseResponse(
+        context,
+        3.8,
+        HALL_SIZE_PRESETS[this.hallSize].decay,
+      );
+      this.impulseResponseAvailable = true;
+    } catch (error) {
+      console.error(
+        "[audio] Could not create the hall impulse response; enabling direct-output fallback.",
+        error,
+      );
+    }
     this.updateOrbit(this.context.currentTime);
     this.updateMix(this.context.currentTime);
+  }
+
+  get hasImpulseResponse(): boolean {
+    return this.impulseResponseAvailable;
   }
 
   get phase(): number {
@@ -321,11 +334,20 @@ export class LargeHall8DEngine {
   setHallSize(size: HallSize): void {
     if (!HALL_SIZE_PRESETS[size] || size === this.hallSize) return;
     this.hallSize = size;
-    this.convolver.buffer = createHallImpulseResponse(
-      this.context,
-      3.8,
-      HALL_SIZE_PRESETS[size].decay,
-    );
+    try {
+      this.convolver.buffer = createHallImpulseResponse(
+        this.context,
+        3.8,
+        HALL_SIZE_PRESETS[size].decay,
+      );
+      this.impulseResponseAvailable = true;
+    } catch (error) {
+      this.impulseResponseAvailable = false;
+      console.error(
+        "[audio] Could not update the hall impulse response; enabling direct-output fallback.",
+        error,
+      );
+    }
     this.updateMix(this.context.currentTime);
   }
 

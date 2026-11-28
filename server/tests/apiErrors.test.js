@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyAudioError } from "../src/apiErrors.js";
+import { classifyAudioError, isClientAbortError } from "../src/apiErrors.js";
 
 test("classifies track, timeout, rate-limit, download, and request failures", () => {
   const cases = [
@@ -37,4 +37,25 @@ test("classifies unknown failures as safe retryable internal errors", () => {
     message: "Something went wrong on the audio server. Please try again.",
     retryable: true,
   });
+});
+
+test("recognizes client-aborted stream errors", () => {
+  for (const code of ["ERR_STREAM_PREMATURE_CLOSE", "ECONNRESET", "ABORT_ERR"]) {
+    const error = Object.assign(new Error("stream closed"), { code });
+    assert.equal(isClientAbortError(error, {}, {}), true);
+  }
+
+  assert.equal(
+    isClientAbortError(new Error("boom"), { aborted: true }, {}),
+    true,
+  );
+  assert.equal(
+    isClientAbortError(
+      Object.assign(new Error("aborted"), { name: "AbortError" }),
+      {},
+      {},
+    ),
+    true,
+  );
+  assert.equal(isClientAbortError(new Error("boom"), {}, {}), false);
 });

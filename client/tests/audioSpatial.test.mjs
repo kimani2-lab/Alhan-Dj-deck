@@ -7,6 +7,7 @@ import {
   LiveBpmTracker,
   orbitSpeedForBpm,
 } from "../src/lib/audio/bpm.ts";
+import { getMediaElementSource } from "../src/lib/audio/mediaElementSource.ts";
 
 class FakeParam {
   value = 0;
@@ -33,9 +34,23 @@ class FakeNode {
 }
 
 class FakeAudioContext {
+  state = "suspended";
   currentTime = 0;
   sampleRate = 8_000;
+  destination = new FakeNode();
   mediaElementSources = [];
+  failConvolverBuffer = false;
+  resumeCalls = 0;
+
+  resume() {
+    this.resumeCalls += 1;
+    this.state = "running";
+    return Promise.resolve();
+  }
+
+  close() {
+    return Promise.resolve();
+  }
 
   createGain() {
     return Object.assign(new FakeNode(), { gain: new FakeParam() });
@@ -49,7 +64,10 @@ class FakeAudioContext {
   }
 
   createMediaElementSource(element) {
-    const source = Object.assign(new FakeNode(), { mediaElement: element });
+    const source = Object.assign(new FakeNode(), {
+      context: this,
+      mediaElement: element,
+    });
     this.mediaElementSources.push(source);
     return source;
   }
@@ -97,7 +115,19 @@ class FakeAudioContext {
   }
 
   createConvolver() {
-    return Object.assign(new FakeNode(), { buffer: null });
+    const shouldFail = () => this.failConvolverBuffer;
+    let buffer = null;
+    const convolver = new FakeNode();
+    Object.defineProperty(convolver, "buffer", {
+      get: () => buffer,
+      set(value) {
+        if (shouldFail()) {
+          throw new Error("Convolver buffer assignment failed.");
+        }
+        buffer = value;
+      },
+    });
+    return convolver;
   }
 
   createOscillator() {
@@ -137,6 +167,7 @@ class FakeAudioElement {
   paused = true;
   error = null;
   listeners = new Map();
+  volume = 1;
 
   addEventListener(name, callback) {
     const callbacks = this.listeners.get(name) ?? [];
@@ -163,6 +194,20 @@ class FakeAudioElement {
     for (const callback of this.listeners.get(name) ?? []) callback();
   }
 }
+
+test("reuses each media element source within its AudioContext", () => {
+  const context = new FakeAudioContext();
+  const element = {};
+  const first = getMediaElementSource(context, element);
+  const second = getMediaElementSource(context, element);
+
+  assert.equal(first, second);
+  assert.equal(context.mediaElementSources.length, 1);
+  assert.throws(
+    () => getMediaElementSource(new FakeAudioContext(), element),
+    /more than one AudioContext/,
+  );
+});
 
 test("generates a stereo hall impulse with early reflections and a decaying tail", () => {
   const sampleRate = 8_000;
@@ -346,6 +391,7 @@ test("loads a remote deck track through a progressive media element", async () =
     assert.equal(deck.audioBuffer, null);
     assert.equal(deck.getSnapshot().duration, 210);
     assert.equal(deck.getSnapshot().isPlaying, true);
+    assert.ok(context.mediaElementSources[0].connections.includes(deck.low));
 
     element.duration = 180;
     assert.equal(deck.getSnapshot().duration, 180);
@@ -390,6 +436,7 @@ test("routes 8D streaming through its existing effects graph", async () => {
   try {
     const context = new FakeAudioContext();
     const engine = new EightDMusicEngine(context, new FakeNode());
+    assert.equal(engine.sourceOutput.gain.value, 1);
     await engine.loadUrl("/api/stream/abcdefghijk", "Streaming 8D track", {
       id: "abcdefghijk",
       channelTitle: "Artist",
@@ -405,13 +452,48 @@ test("routes 8D streaming through its existing effects graph", async () => {
     assert.equal(element.preload, "auto");
     assert.equal(element.src, "/api/stream/abcdefghijk");
     assert.equal(engine.getSnapshot().duration, 210);
+    assert.equal(context.resumeCalls, 1);
     element.duration = 180;
     assert.equal(engine.getSnapshot().duration, 180);
     assert.equal(engine.getSnapshot().isPlaying, true);
     assert.ok(context.mediaElementSources[0].connections.includes(engine.sourceOutput));
+    assert.equal(engine.spatialEngine.orbitDryGain.gain.value, 1);
+    assert.ok(engine.analyser.connections.length > 0);
 
     engine.dispose();
   } finally {
+    if (originalAudio === undefined) delete globalThis.Audio;
+    else globalThis.Audio = originalAudio;
+  }
+});
+
+test("routes audio directly to the destination if the hall impulse fails", async () => {
+  const originalAudio = globalThis.Audio;
+  const originalConsoleError = console.error;
+  globalThis.Audio = FakeAudioElement;
+  console.error = () => {};
+  try {
+    const context = new FakeAudioContext();
+    context.failConvolverBuffer = true;
+    const engine = new EightDMusicEngine(context, new FakeNode());
+    await engine.loadUrl("/api/stream/abcdefghijk", "Streaming 8D track", {
+      id: "abcdefghijk",
+      channelTitle: "Artist",
+      thumbnail: "",
+      duration: 210,
+    });
+    engine.setVolume(0.5);
+
+    const element = context.mediaElementSources[0].mediaElement;
+    assert.ok(
+      context.mediaElementSources[0].connections.includes(context.destination),
+    );
+    assert.equal(element.volume, 0.5);
+    assert.equal(engine.spatialEngine.hasImpulseResponse, false);
+
+    engine.dispose();
+  } finally {
+    console.error = originalConsoleError;
     if (originalAudio === undefined) delete globalThis.Audio;
     else globalThis.Audio = originalAudio;
   }

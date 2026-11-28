@@ -6,6 +6,7 @@ import {
   createBassEnhancement,
   type BassEnhancement,
 } from "./bassEnhancement.ts";
+import { getMediaElementSource } from "./mediaElementSource.ts";
 import { detectBpm, LiveBpmTracker, orbitSpeedForBpm } from "./bpm.ts";
 
 export {
@@ -67,6 +68,7 @@ export class Deck {
   private source: AudioBufferSourceNode | null = null;
   private mediaElement: HTMLAudioElement | null = null;
   private mediaElementSource: MediaElementAudioSourceNode | null = null;
+  private directOutputFallback = false;
   private buffer: AudioBuffer | null = null;
   private streaming = false;
   private durationHint = 0;
@@ -83,7 +85,7 @@ export class Deck {
   private tempo = 0;
   private bpm = 120;
   private bpmManual = false;
-  private volume = 0.82;
+  private volume = 1;
   private filter = 0;
   private bassBoost = false;
   private eq = { low: 0, mid: 0, high: 0 };
@@ -221,9 +223,28 @@ export class Deck {
       );
     });
     this.mediaElement = element;
-    this.mediaElementSource = this.context.createMediaElementSource(element);
+    this.mediaElementSource = getMediaElementSource(this.context, element);
     this.mediaElementSource.connect(this.low);
+    this.ensureOutputRoute();
     return element;
+  }
+
+  private ensureOutputRoute(): void {
+    if (
+      this.spatialEngine.hasImpulseResponse ||
+      this.directOutputFallback ||
+      !this.mediaElementSource
+    ) {
+      return;
+    }
+
+    this.mediaElementSource.disconnect();
+    this.mediaElementSource.connect(this.context.destination);
+    this.directOutputFallback = true;
+    if (this.mediaElement) this.mediaElement.volume = this.volume;
+    console.warn(
+      `[audio] Deck ${this.id} hall impulse response unavailable; routing audio directly to the output.`,
+    );
   }
 
   private clearMediaElement(): void {
@@ -309,6 +330,7 @@ export class Deck {
 
   play(): void {
     if (this.streaming && this.mediaElement) {
+      this.ensureOutputRoute();
       if (this.duration > 0 && this.mediaElement.currentTime >= this.duration) {
         this.mediaElement.currentTime = 0;
       }
@@ -516,6 +538,10 @@ export class Deck {
 
   setVolume(value: number): void {
     this.volume = clamp(value, 0, 1);
+    if (this.directOutputFallback && this.mediaElement) {
+      this.mediaElement.volume = this.volume;
+      return;
+    }
     this.output.gain.setTargetAtTime(
       this.volume,
       this.context.currentTime,

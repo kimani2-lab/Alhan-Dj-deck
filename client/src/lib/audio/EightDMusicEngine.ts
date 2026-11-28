@@ -6,6 +6,7 @@ import {
   createBassEnhancement,
   type BassEnhancement,
 } from "./bassEnhancement.ts";
+import { getMediaElementSource } from "./mediaElementSource.ts";
 import { LiveBpmTracker, orbitSpeedForBpm } from "./bpm.ts";
 
 export type EightDMusicSnapshot = {
@@ -44,6 +45,7 @@ export class EightDMusicEngine {
   private readonly bpmTracker = new LiveBpmTracker();
   private mediaElement: HTMLAudioElement | null = null;
   private mediaElementSource: MediaElementAudioSourceNode | null = null;
+  private directOutputFallback = false;
   private durationHint = 0;
   private title = "No track loaded";
   private trackId: string | null = null;
@@ -52,7 +54,7 @@ export class EightDMusicEngine {
   private playing = false;
   private bassBoost = false;
   private trebleMuted = false;
-  private volume = 0.82;
+  private volume = 1;
   private bpm = 120;
   private bpmManual = false;
   private spatialEnabled = true;
@@ -133,9 +135,28 @@ export class EightDMusicEngine {
       );
     });
     this.mediaElement = element;
-    this.mediaElementSource = this.context.createMediaElementSource(element);
+    this.mediaElementSource = getMediaElementSource(this.context, element);
     this.mediaElementSource.connect(this.sourceOutput);
+    this.ensureOutputRoute();
     return element;
+  }
+
+  private ensureOutputRoute(): void {
+    if (
+      this.spatialEngine.hasImpulseResponse ||
+      this.directOutputFallback ||
+      !this.mediaElementSource
+    ) {
+      return;
+    }
+
+    this.mediaElementSource.disconnect();
+    this.mediaElementSource.connect(this.context.destination);
+    this.directOutputFallback = true;
+    if (this.mediaElement) this.mediaElement.volume = this.volume;
+    console.warn(
+      "[audio] Hall impulse response unavailable; routing audio directly to the output.",
+    );
   }
 
   private clearMediaElement(): void {
@@ -181,6 +202,7 @@ export class EightDMusicEngine {
 
   play(): void {
     if (!this.streaming || !this.mediaElement || this.playing) return;
+    this.ensureOutputRoute();
     if (this.duration > 0 && this.mediaElement.currentTime >= this.duration) {
       this.mediaElement.currentTime = 0;
     }
@@ -215,6 +237,10 @@ export class EightDMusicEngine {
 
   setVolume(value: number): void {
     this.volume = Math.min(1, Math.max(0, value));
+    if (this.directOutputFallback && this.mediaElement) {
+      this.mediaElement.volume = this.volume;
+      return;
+    }
     this.sourceOutput.gain.setTargetAtTime(
       this.volume,
       this.context.currentTime,
