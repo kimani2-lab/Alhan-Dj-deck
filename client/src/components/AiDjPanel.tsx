@@ -17,7 +17,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   isAiStage,
   STAGE_LABELS,
@@ -29,35 +29,13 @@ import {
 import type { TrackResult } from "../lib/tracks";
 import TrackArtwork from "./TrackArtwork";
 import type { TasteProfile } from "../utils/tasteProfile";
-import { fetchApi, readApiJson } from "../lib/api";
+import { apiRequest } from "../lib/api";
+import { useAlhanVoiceAssistant } from "../hooks/useAlhanVoiceAssistant";
 
 type DeckSlot = "A" | "B";
 type AiMode = "dj" | "music";
 
 const MAX_SETLIST_TRACKS = 24;
-
-type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & {
-  isFinal?: boolean;
-};
-
-type SpeechRecognitionLike = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  onresult: ((event: { results: ArrayLike<SpeechRecognitionResult> }) => void) | null;
-  onstart: (() => void) | null;
-  onerror: ((event: { error: string }) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-
-type SpeechRecognitionWindow = Window & {
-  SpeechRecognition?: SpeechRecognitionConstructor;
-  webkitSpeechRecognition?: SpeechRecognitionConstructor;
-};
 
 const stageIcon = (stage: string) => {
   if (!isAiStage(stage)) return <Zap size={11} />;
@@ -86,6 +64,8 @@ export default function AiDjPanel({
   aiQueueIndex,
   onStopSet,
   tasteProfile,
+  onDuckVolume,
+  onRestoreVolume,
 }: {
   open: boolean;
   mode: AiMode;
@@ -105,6 +85,8 @@ export default function AiDjPanel({
   aiQueueIndex: number;
   onStopSet: () => void;
   tasteProfile: TasteProfile | null;
+  onDuckVolume?: () => void;
+  onRestoreVolume?: () => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [setlist, setSetlist] = useState<string[]>([]);
@@ -119,50 +101,17 @@ export default function AiDjPanel({
   const [resolvedSteps, setResolvedSteps] = useState<Array<TrackResult | null>>(
     [],
   );
-  const [listening, setListening] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState("");
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const recognitionConstructorRef = useRef<SpeechRecognitionConstructor | null>(null);
-  const restartRecognitionRef = useRef<(() => void) | null>(null);
-  const listenerEnabledRef = useRef(false);
-  const awaitingSongRef = useRef(false);
-  const speechPausedRef = useRef(false);
   const busyRef = useRef(false);
-  const runRequestRef = useRef<((options?: {
-    workflow?: "vibe" | "setlist";
-    message?: string;
-    autoPlay?: boolean;
-  }) => Promise<void>) | null>(null);
-  const speakAsAlhanRef = useRef<(message: string) => void>(() => {});
-
-  useEffect(
-    () => () => {
-      listenerEnabledRef.current = false;
-      recognitionRef.current?.stop();
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-    },
-    [],
-  );
-
-  const speakAsAlhan = (message: string) => {
-    if (!("speechSynthesis" in window)) return;
-    speechPausedRef.current = true;
-    recognitionRef.current?.stop();
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(message);
-    utterance.lang = navigator.language || "en-US";
-    const resumeListening = () => {
-      speechPausedRef.current = false;
-      if (listenerEnabledRef.current && !busyRef.current) {
-        window.setTimeout(() => restartRecognitionRef.current?.(), 350);
-      } else {
-        setListening(false);
-      }
-    };
-    utterance.onend = resumeListening;
-    utterance.onerror = resumeListening;
-    window.speechSynthesis.speak(utterance);
-  };
+  const voice = useAlhanVoiceAssistant({
+    active: activated,
+    searchTracks,
+    onPlayTrack: (track) =>
+      onPlayIn8D(track, { enable8d: true, bassBoost: false }),
+    onDuckVolume,
+    onRestoreVolume,
+    onCommand: setPrompt,
+    onError: setError,
+  });
 
   const addTrack = () => {
     const value = trackInput.trim();
@@ -189,73 +138,24 @@ export default function AiDjPanel({
     setSetlist((current) => current.filter((_, itemIndex) => itemIndex !== index));
   };
 
-  const resolvePlayRequest = async (
-    query: string,
-    autoPlay: boolean,
-    fx: DeckFx,
-  ) => {
+  const resolvePlayRequest = async (query: string) => {
     setResolvingPlay(true);
-    if (autoPlay) setVoiceStatus(`Finding “${query}” on YouTube…`);
     try {
       const tracks = await searchTracks(query);
       const track = tracks[0] ?? null;
       setResolvedPlay(track);
       if (!track) {
-        const message = `I couldn't find “${query}” on YouTube. Try another title or artist.`;
-        setError(message);
-        if (autoPlay) {
-          setVoiceStatus(message);
-          setResponse((current) =>
-            current?.action.type === "play_request"
-              ? { ...current, reply: message }
-              : current,
-          );
-          speakAsAlhan(message);
-        }
-        return;
-      }
-
-      if (autoPlay) {
-        setVoiceStatus(`Starting “${track.title}”…`);
-        const started = await onPlayIn8D(track, fx);
-        if (!started) {
-          const message = `I found “${track.title}”, but couldn't start playback. Check the audio server and try again.`;
-          setError(message);
-          setVoiceStatus(message);
-          setResponse((current) =>
-            current?.action.type === "play_request"
-              ? { ...current, reply: message }
-              : current,
-          );
-          speakAsAlhan(message);
-          return;
-        }
-
-        const reply = `Playing ${track.title}.`;
-        setVoiceStatus(reply);
-        setResponse((current) =>
-          current?.action.type === "play_request"
-            ? { ...current, reply }
-            : current,
+        setError(
+          `I couldn't find “${query}” on YouTube. Try another title or artist.`,
         );
-        speakAsAlhan(reply);
       }
     } catch (reason) {
       setResolvedPlay(null);
-      const message =
+      setError(
         reason instanceof Error
           ? reason.message
-          : "Could not resolve that request through YouTube search.";
-      setError(message);
-      if (autoPlay) {
-        setVoiceStatus(message);
-        setResponse((current) =>
-          current?.action.type === "play_request"
-            ? { ...current, reply: message }
-            : current,
-        );
-        speakAsAlhan(message);
-      }
+          : "Could not resolve that request through YouTube search.",
+      );
     } finally {
       setResolvingPlay(false);
     }
@@ -293,17 +193,15 @@ export default function AiDjPanel({
   const runRequest = async (options?: {
     workflow?: "vibe" | "setlist";
     message?: string;
-    autoPlay?: boolean;
   }) => {
     if (!activated) {
       setError("Activate ALHAN Bot to start a voice or setlist request.");
       return;
     }
     if (busyRef.current) return;
-    const autoPlay = options?.autoPlay === true;
     const workflow =
       options?.workflow ??
-      (autoPlay ? "vibe" : mode === "dj" && setlist.length > 0 ? "setlist" : "vibe");
+      (mode === "dj" && setlist.length > 0 ? "setlist" : "vibe");
     const message =
       (options?.message ?? prompt).trim() ||
       (workflow === "setlist"
@@ -326,10 +224,9 @@ export default function AiDjPanel({
     setResponse(null);
     setResolvedPlay(null);
     setResolvedSteps([]);
-    if (autoPlay) setVoiceStatus("ALHAN is finding your track…");
 
     try {
-      const result = await fetchApi(
+      const { data } = await apiRequest<AiDjResponse>(
         "/api/ai-dj",
         {
           method: "POST",
@@ -345,23 +242,13 @@ export default function AiDjPanel({
             recentSearches: tasteProfile?.recentSearches ?? [],
           }),
         },
+        { fallbackMessage: "The AI DJ request failed." },
       );
-      const data = await readApiJson<AiDjResponse>(
-        result,
-        "The AI DJ request failed",
-      );
-      if (!result.ok) throw new Error(data.error ?? "The AI DJ request failed.");
       if (!data?.action) throw new Error("The AI DJ returned an unexpected response.");
-      if (autoPlay && data.action.type !== "play_request") {
-        throw new Error("Ask ALHAN for one song at a time when using voice playback.");
-      }
       setResponse(data);
 
       if (data.action.type === "play_request") {
-        await resolvePlayRequest(data.action.query, autoPlay, {
-          enable8d: data.action.enable8d,
-          bassBoost: data.action.bassBoost,
-        });
+        await resolvePlayRequest(data.action.query);
       } else {
         await resolveSetSteps(data.action.steps);
       }
@@ -371,163 +258,11 @@ export default function AiDjPanel({
           ? reason.message
           : "Could not reach the AI DJ service.",
       );
-      if (autoPlay) {
-        const message =
-          reason instanceof Error
-            ? reason.message
-            : "ALHAN couldn't process that voice request.";
-        setVoiceStatus(message);
-        speakAsAlhan(message);
-      }
     } finally {
       busyRef.current = false;
       setBusy(false);
-      if (!listenerEnabledRef.current) setListening(false);
-      if (listenerEnabledRef.current && !speechPausedRef.current) {
-        window.setTimeout(() => restartRecognitionRef.current?.(), 350);
-      }
     }
   };
-
-  useEffect(() => {
-    runRequestRef.current = runRequest;
-    speakAsAlhanRef.current = speakAsAlhan;
-  });
-
-  const startListening = useCallback(() => {
-    const Recognition = recognitionConstructorRef.current;
-    if (
-      !Recognition ||
-      !listenerEnabledRef.current ||
-      busyRef.current ||
-      speechPausedRef.current ||
-      recognitionRef.current
-    ) {
-      return;
-    }
-
-    const recognition = new Recognition();
-    recognition.lang = navigator.language || "en-US";
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.onstart = () => {
-      setListening(true);
-      setVoiceStatus('Listening for “Alhan”…');
-    };
-    recognition.onresult = (event) => {
-      const result = event.results[event.results.length - 1];
-      if (!result?.isFinal && result?.isFinal !== undefined) return;
-      const transcript = result?.[0]?.transcript.trim();
-      if (!transcript) return;
-
-      const wakeWord = /\b(?:alhan|alham)\b/i;
-      const hasWakeWord = wakeWord.test(transcript);
-      const request = hasWakeWord
-        ? transcript
-            .replace(wakeWord, " ")
-            .replace(/^[\s,.:;-]+|[\s,.:;!?-]+$/g, "")
-            .trim()
-        : awaitingSongRef.current
-          ? transcript
-          : "";
-
-      if (hasWakeWord && !request) {
-        awaitingSongRef.current = true;
-        setVoiceStatus("ALHAN heard you. Listening for your song request…");
-        recognition.stop();
-        speakAsAlhanRef.current("Yes, how can I help?");
-        return;
-      }
-
-      if (!request) {
-        setVoiceStatus('Listening for “Alhan”…');
-        return;
-      }
-
-      awaitingSongRef.current = false;
-      setPrompt(request);
-      setVoiceStatus(`Okay. Searching for “${request}”…`);
-      recognition.stop();
-      speakAsAlhanRef.current("Okay, searching now.");
-      void runRequestRef.current?.({
-        workflow: "vibe",
-        message: request,
-        autoPlay: true,
-      });
-    };
-    recognition.onerror = (event) => {
-      if (event.error === "no-speech" || event.error === "aborted") return;
-      const needsPermission = event.error === "not-allowed" || event.error === "service-not-allowed";
-      const missingMicrophone = event.error === "audio-capture";
-      const message =
-        needsPermission
-          ? "Microphone access was denied. Allow it for this site, then reload the app."
-          : missingMicrophone
-            ? "No microphone was detected. Connect a microphone and try again."
-            : `Voice recognition was interrupted${event.error ? ` (${event.error})` : ""}. Restarting…`;
-      if (needsPermission || missingMicrophone) {
-        listenerEnabledRef.current = false;
-      }
-      setError(message);
-      setVoiceStatus(message);
-      if (needsPermission || missingMicrophone) setListening(false);
-    };
-    recognition.onend = () => {
-      if (recognitionRef.current === recognition) recognitionRef.current = null;
-      if (!listenerEnabledRef.current) {
-        setListening(false);
-        return;
-      }
-      if (
-        !speechPausedRef.current &&
-        !busyRef.current
-      ) {
-        window.setTimeout(() => restartRecognitionRef.current?.(), 350);
-      }
-    };
-
-    recognitionRef.current = recognition;
-    try {
-      recognition.start();
-    } catch (reason) {
-      recognitionRef.current = null;
-      listenerEnabledRef.current = false;
-      setListening(false);
-      const message =
-        reason instanceof Error ? reason.message : "Could not start voice input.";
-      setError(message);
-      setVoiceStatus(message);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!activated) {
-      listenerEnabledRef.current = false;
-      recognitionRef.current?.stop();
-      recognitionRef.current = null;
-      setListening(false);
-      setVoiceStatus("Activate ALHAN Bot to enable voice listening.");
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      const speechWindow = window as SpeechRecognitionWindow;
-      const Recognition =
-        speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
-      if (!Recognition) {
-        setError("Voice input isn't supported in this browser. Try a current version of Chrome or Edge.");
-        setVoiceStatus("Voice input isn't supported in this browser.");
-        return;
-      }
-
-      recognitionConstructorRef.current = Recognition;
-      listenerEnabledRef.current = true;
-      setError("");
-      setVoiceStatus('Starting wake-word listening for “Alhan”…');
-      restartRecognitionRef.current = startListening;
-      startListening();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [activated, startListening]);
 
   const retryStep = async (index: number, step: AiSetStep) => {
     try {
@@ -700,12 +435,28 @@ export default function AiDjPanel({
           </label>
 
           <div className="ai-voice-control">
-            <span className={`ai-voice-mark ${listening ? "listening" : ""}`}>
+            <span
+              className={`ai-voice-mark ${voice.listening ? "listening" : ""}`}
+            >
               <Mic size={14} />
             </span>
-            <span aria-live="polite">
-              {voiceStatus || "Say “Alhan” followed by a song request."}
+            <span className="ai-voice-status" aria-live="polite">
+              {voice.status}
             </span>
+            <button
+              type="button"
+              className={`ai-voice-toggle ${voice.enabled ? "on" : ""}`}
+              onClick={voice.toggle}
+              disabled={!activated || !voice.supported}
+              aria-pressed={voice.enabled}
+              title={
+                voice.supported
+                  ? "Toggle hands-free wake-word listening"
+                  : "Voice control isn't supported in this browser."
+              }
+            >
+              {voice.enabled ? "VOICE WAKE: ON" : "VOICE WAKE: OFF"}
+            </button>
           </div>
 
           <div className="ai-chips">

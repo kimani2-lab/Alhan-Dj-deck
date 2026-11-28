@@ -38,7 +38,6 @@ import {
   type GenreId,
   type TasteProfile,
 } from "../utils/tasteProfile";
-import { apiUrl } from "../lib/api";
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds)) return "0:00";
@@ -222,6 +221,7 @@ export default function MusicPlayerMode({
   genreFilter,
   onGenreFilterChange,
   onUpdateTaste,
+  onDownload,
 }: {
   engine: MixerEngine | null;
   snapshot: DeckSnapshot;
@@ -247,6 +247,7 @@ export default function MusicPlayerMode({
   genreFilter: GenreId | null;
   onGenreFilterChange: (genre: GenreId | null) => void;
   onUpdateTaste: () => void;
+  onDownload: (track: TrackResult) => void;
 }) {
   const [scrubPosition, setScrubPosition] = useState<number | null>(null);
   const activeSnapshot = eightDSnapshot ?? snapshot;
@@ -576,12 +577,13 @@ export default function MusicPlayerMode({
                     >
                       {loadingId === track.id ? <LoaderCircle className="spinner" size={13} /> : <><Play size={12} fill="currentColor" /> PLAY IN 8D</>}
                     </button>
-                    <a
-                      href={apiUrl(`/api/download?id=${encodeURIComponent(track.id)}`)}
+                    <button
+                      type="button"
+                      onClick={() => onDownload(track)}
                       aria-label={`Download MP3: ${track.title}`}
                     >
                       <Download size={12} /> DOWNLOAD MP3
-                    </a>
+                    </button>
                   </div>
                 </div>
               </article>
@@ -615,12 +617,13 @@ export default function MusicPlayerMode({
                       {loadingId === track.id ? <LoaderCircle className="spinner" size={12} /> : <><Play size={11} fill="currentColor" /> PLAY</>}
                     </button>
                     <button type="button" onClick={() => onSeedTrack(track)}>SEED</button>
-                    <a
-                      href={apiUrl(`/api/download?id=${encodeURIComponent(track.id)}`)}
+                    <button
+                      type="button"
+                      onClick={() => onDownload(track)}
                       aria-label={`Download MP3: ${track.title}`}
                     >
                       <Download size={12} />
-                    </a>
+                    </button>
                   </div>
                 </article>
               ))}
