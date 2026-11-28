@@ -1,3 +1,5 @@
+import { createAudioError } from "./apiErrors.js";
+
 const STAGES = ["build", "peak", "drive", "lift"];
 const MAX_TRACKS = 30;
 const MAX_MESSAGE_LENGTH = 1_500;
@@ -627,10 +629,7 @@ export function registerAiDjRoutes(app) {
         : undefined;
 
     if (!message && orderedTracks.length === 0) {
-      response.status(400).json({
-        error: "Send a message or provide at least one ordered track.",
-      });
-      return;
+      throw createAudioError("INVALID_REQUEST");
     }
 
     const workflow = classifyWorkflow(
@@ -671,24 +670,15 @@ export function registerAiDjRoutes(app) {
           .slice(0, 10)
       : [];
 
-    try {
-      const result = await createAiDjResponse({
-        message,
-        orderedTracks,
-        includeBridges,
-        workflow,
-        selectedGenres,
-        genreAffinities,
-        recentSearches,
-      });
-      response.json(result);
-    } catch (error) {
-      response.status(502).json({
-        error:
-          error instanceof Error
-            ? error.message
-            : "The AI DJ could not build a response.",
-      });
-    }
+    const result = await createAiDjResponse({
+      message,
+      orderedTracks,
+      includeBridges,
+      workflow,
+      selectedGenres,
+      genreAffinities,
+      recentSearches,
+    });
+    response.json(result);
   });
 }

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test tests/ecosystemQueue.test.mjs tests/audioSpatial.test.mjs tests/beatPad.test.mjs tests/tasteProfile.test.mjs"
+    "test": "node --experimental-strip-types --test tests/ecosystemQueue.test.mjs tests/audioSpatial.test.mjs tests/beatPad.test.mjs tests/tasteProfile.test.mjs tests/api.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.77.0",

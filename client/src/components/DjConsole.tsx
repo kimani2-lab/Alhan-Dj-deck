@@ -77,7 +77,10 @@ import {
   type TasteProfile,
 } from "../utils/tasteProfile";
 import { useTasteProfile } from "../hooks/useTasteProfile";
-import { apiUrl, fetchApi, readApiJson } from "../lib/api";
+import {
+  apiRequest,
+  ApiRequestError,
+} from "../lib/api";
 import PwaInstallButton from "./PwaInstallButton";
 
 const TASTE_PROMPTED_KEY = "alhan-dj:taste-prompted:v1";
@@ -861,8 +864,7 @@ export default function DjConsole() {
         if (!cancelled) setBackendStatus("warming");
       }, 1200);
       try {
-        const response = await fetchApi("/api/health", { cache: "no-store" });
-        if (!response.ok) throw new Error("Backend unavailable");
+        await apiRequest("/api/health", { cache: "no-store" });
         if (!cancelled) setBackendStatus("ready");
       } catch {
         if (!cancelled) setBackendStatus("offline");
@@ -885,9 +887,34 @@ export default function DjConsole() {
       mixer.masterInput,
     );
     const reportPlaybackError = (reason: Error) => setError(reason.message);
+    const reportEightDPlaybackError = async () => {
+      const trackId = eightDEngineRef.current?.getSnapshot().trackId;
+      if (!trackId) {
+        setError("This track could not be played. Try another track.");
+        return;
+      }
+
+      try {
+        await apiRequest(
+          `/api/stream/${encodeURIComponent(trackId)}`,
+          undefined,
+          {
+            responseType: "media",
+            fallbackMessage: "This track could not be played. Try another track.",
+          },
+        );
+        setError("This track could not be played. Try another track.");
+      } catch (reason) {
+        setError(
+          reason instanceof ApiRequestError
+            ? reason.message
+            : "Could not reach the audio server. Check your connection and try again.",
+        );
+      }
+    };
     mixer.deckA.setOnPlaybackError(reportPlaybackError);
     mixer.deckB.setOnPlaybackError(reportPlaybackError);
-    eightD.setOnPlaybackError(reportPlaybackError);
+    eightD.setOnPlaybackError(() => void reportEightDPlaybackError());
     eightDEngineRef.current = eightD;
     engineRef.current = mixer;
     let isReady = false;
@@ -1079,16 +1106,15 @@ export default function DjConsole() {
     if (prefetchedNextTrackRef.current === prefetchKey) return;
     prefetchedNextTrackRef.current = prefetchKey;
 
-    void fetchApi("/api/stream/prefetch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ videoId: nextTrack.id }),
-    })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`Prefetch request failed (${response.status}).`);
-        }
-      })
+    void apiRequest(
+      "/api/stream/prefetch",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: nextTrack.id }),
+      },
+      { retryGateway: true, fallbackMessage: "Could not prefetch the next track." },
+    )
       .catch((reason: unknown) => {
         console.warn(
           "[playback] Could not prefetch the next ecosystem track:",
@@ -1227,6 +1253,31 @@ export default function DjConsole() {
     [activateMediaSource, recordTastePlay],
   );
 
+  const downloadTrack = useCallback(async (track: TrackResult) => {
+    try {
+      const { data } = await apiRequest<Blob>(
+        `/api/download?id=${encodeURIComponent(track.id)}&title=${encodeURIComponent(track.title)}`,
+        undefined,
+        {
+          responseType: "blob",
+          fallbackMessage: "The MP3 download failed. Please try again.",
+        },
+      );
+      const objectUrl = URL.createObjectURL(data);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `${track.title.replace(/[^\w.-]+/g, "-") || "alhan-track"}.mp3`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    } catch (reason) {
+      setError(
+        reason instanceof ApiRequestError
+          ? reason.message
+          : "The MP3 download failed. Check your connection and try again.",
+      );
+    }
+  }, []);
+
   const searchRequestRef = useRef(0);
   const trackSearchCacheRef = useRef(new Map<string, Promise<TrackResult[]>>());
   const backgroundSearchChainRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -1258,12 +1309,14 @@ export default function DjConsole() {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 125_000);
       const request = (async () => {
-        let response: Response;
+        let data: { tracks?: TrackResult[] };
         try {
-          response = await fetchApi(
+          const result = await apiRequest<{ tracks?: TrackResult[] }>(
             `/api/search?q=${encodeURIComponent(query)}`,
             { signal: controller.signal },
+            { retryGateway: true, fallbackMessage: "YouTube search failed." },
           );
+          data = result.data;
         } catch (reason) {
           if (reason instanceof DOMException && reason.name === "AbortError") {
             throw new Error(
@@ -1273,13 +1326,9 @@ export default function DjConsole() {
           throw reason instanceof Error
             ? reason
             : new Error("Could not reach the YouTube search server.");
+        } finally {
+          window.clearTimeout(timeout);
         }
-        window.clearTimeout(timeout);
-        const data = await readApiJson<{
-          tracks?: TrackResult[];
-          error?: string;
-        }>(response, "YouTube search failed");
-        if (!response.ok) throw new Error(data.error ?? "YouTube search failed.");
         const tracks = (data.tracks ?? []).map((track) => normalizeTrack(track));
         writeSessionSearchCache(cacheKey, tracks);
         return tracks;
@@ -2286,12 +2335,13 @@ export default function DjConsole() {
                           <b title={track.title}>{track.title}</b>
                           <small>{track.channelTitle}</small>
                           <div className="alhan-track-card-actions">
-                            <a
-                              href={apiUrl(`/api/download?id=${encodeURIComponent(track.id)}`)}
+                            <button
+                              type="button"
+                              onClick={() => void downloadTrack(track)}
                               aria-label={`Download MP3 ${track.title}`}
                             >
                               <Download size={11} />
-                            </a>
+                            </button>
                           </div>
                         </article>
                         );
@@ -2385,11 +2435,12 @@ export default function DjConsole() {
                           >
                             Add to Queue
                           </button>
-                          <a
-                            href={apiUrl(`/api/download?id=${encodeURIComponent(track.id)}`)}
+                          <button
+                            type="button"
+                            onClick={() => void downloadTrack(track)}
                           >
                             Download MP3
-                          </a>
+                          </button>
                         </div>
                       </details>
                     </div>
@@ -2608,6 +2659,7 @@ export default function DjConsole() {
           genreFilter={genreFilter}
           onGenreFilterChange={setGenreFilter}
           onUpdateTaste={() => setGenreOnboardingOpen(true)}
+          onDownload={downloadTrack}
         />
         )
       )}

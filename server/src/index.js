@@ -7,6 +7,10 @@ import os from "node:os";
 import path from "node:path";
 import cors from "cors";
 import express from "express";
+import {
+  audioErrorMiddleware,
+  createAudioError,
+} from "./apiErrors.js";
 import { registerAiDjRoutes } from "./aiDj.js";
 import {
   getResolvedStreamMetadata,
@@ -16,7 +20,6 @@ import {
 import {
   AUDIO_FALLBACK_FORMAT,
   AUDIO_FIRST_FORMAT,
-  isRequestedFormatUnavailable,
   runWithAudioFormatFallback,
 } from "./ytDlpFormats.js";
 import { createConcurrencyLimiter } from "./ytDlpLimiter.js";
@@ -218,10 +221,6 @@ function logYtDlpFailure(operation, stderr) {
   );
 }
 
-function getYtDlpFailureStatus(error) {
-  return isRequestedFormatUnavailable(error) ? 500 : 502;
-}
-
 function setStreamCorsHeaders(request, response) {
   const origin = request.headers.origin;
   if (isAllowedOrigin(origin)) {
@@ -312,8 +311,11 @@ function runYtDlpProcess(args, timeoutMs = 50_000, operation = "command") {
       timedOut = true;
       settled = true;
       child?.kill();
-      logYtDlpFailure(operation, Buffer.concat(stderr).toString("utf8"));
-      reject(new Error("yt-dlp request timed out."));
+      const stderrText = Buffer.concat(stderr).toString("utf8");
+      logYtDlpFailure(operation, stderrText);
+      const error = new Error("yt-dlp request timed out.");
+      error.stderr = stderrText;
+      reject(error);
     }, timeoutMs);
 
     spawnYtDlp(args).then((spawned) => {
@@ -338,13 +340,13 @@ function runYtDlpProcess(args, timeoutMs = 50_000, operation = "command") {
         if (code !== 0) {
           const stderrText = Buffer.concat(stderr).toString("utf8");
           logYtDlpFailure(operation, stderrText);
-          reject(
-            new Error(
-              formatYtDlpError(
-                stderrText.trim() || `yt-dlp exited with status ${code}.`,
-              ),
+          const error = new Error(
+            formatYtDlpError(
+              stderrText.trim() || `yt-dlp exited with status ${code}.`,
             ),
           );
+          error.stderr = stderrText;
+          reject(error);
           return;
         }
         resolve(Buffer.concat(stdout).toString("utf8"));
@@ -361,7 +363,6 @@ function runYtDlpProcess(args, timeoutMs = 50_000, operation = "command") {
 
 const YT_DLP_PRIORITY = {
   stream: 10,
-  download: 5,
   background: 0,
 };
 
@@ -487,16 +488,8 @@ app.get("/api/health", (_request, response) => {
 });
 
 app.get("/api/status", async (_request, response) => {
-  try {
-    await runYtDlp([...getYtDlpBaseArgs(), "--version"], 10_000, "status");
-    response.json({ status: "ok", ytDlp: "available" });
-  } catch (error) {
-    response.status(503).json({
-      status: "degraded",
-      ytDlp: "unavailable",
-      error: error instanceof Error ? error.message : "yt-dlp unavailable",
-    });
-  }
+  await runYtDlp([...getYtDlpBaseArgs(), "--version"], 10_000, "status");
+  response.json({ status: "ok", ytDlp: "available" });
 });
 
 const searchCache = new Map();
@@ -507,15 +500,13 @@ const SEARCH_CACHE_MAX_ENTRIES = 200;
 app.get("/api/search", async (request, response) => {
   const query = String(request.query.q ?? "").trim();
   if (!query || query.length > 200) {
-    response.status(400).json({ error: "Enter a search query (up to 200 characters)." });
-    return;
+    throw createAudioError("INVALID_REQUEST");
   }
 
   const videoId = getYouTubeVideoId(query);
   const isUrl = /^https?:\/\//i.test(query);
   if (isUrl && !videoId) {
-    response.status(400).json({ error: "Paste a valid YouTube video URL." });
-    return;
+    throw createAudioError("INVALID_REQUEST");
   }
 
   const cacheKey = query.replace(/\s+/g, " ").toLowerCase();
@@ -583,19 +574,12 @@ app.get("/api/search", async (request, response) => {
       });
   }
 
-  try {
-    const value = await pending;
-    response.setHeader("Cache-Control", "public, max-age=300");
-    response.setHeader("X-Search-Cache", deduped ? "deduped" : "miss");
-    response.json(value);
-  } catch (error) {
-    response.status(502).json({
-      error: error instanceof Error ? error.message : "YouTube search failed.",
-    });
-  }
+  const value = await pending;
+  response.setHeader("Cache-Control", "public, max-age=300");
+  response.setHeader("X-Search-Cache", deduped ? "deduped" : "miss");
+  response.json(value);
 });
 
-const PLAYER_CLIENTS = [null, "android", "ios", "tv", "mweb"];
 const streamUrlCache = new StreamUrlCache();
 const streamUrlResolutions = new Map();
 
@@ -759,13 +743,12 @@ async function proxyStreamRequest(request, response, videoId, retryExpiredUrl = 
   if (!upstream.ok && upstream.status !== 206 && upstream.status !== 416) {
     await upstream.body?.cancel();
     response.removeListener("close", abortOnDisconnect);
-    console.error(
-      `[stream] Upstream request failed for ${videoId} with HTTP ${upstream.status}.`,
+    const error = new Error(
+      `The upstream audio request failed with HTTP ${upstream.status}.`,
     );
-    response.status(502).json({
-      error: `The upstream audio stream returned HTTP ${upstream.status}.`,
-    });
-    return;
+    error.videoId = videoId;
+    if (upstream.status >= 500) error.code = "DOWNLOAD_FAILED";
+    throw error;
   }
 
   updateStreamMetadata(videoId, resolved.streamUrl, upstream);
@@ -798,10 +781,6 @@ async function proxyStreamRequest(request, response, videoId, retryExpiredUrl = 
     } else {
       response.end();
     }
-  } catch (error) {
-    if (!response.destroyed) {
-      response.destroy(error instanceof Error ? error : new Error("Audio proxy failed."));
-    }
   } finally {
     response.removeListener("close", abortOnDisconnect);
   }
@@ -810,8 +789,7 @@ async function proxyStreamRequest(request, response, videoId, retryExpiredUrl = 
 app.post("/api/stream/prefetch", async (request, response) => {
   const videoId = String(request.body?.videoId ?? request.body?.id ?? "");
   if (!/^[\w-]{11}$/.test(videoId)) {
-    response.status(400).json({ error: "A valid YouTube video ID is required." });
-    return;
+    throw createAudioError("INVALID_REQUEST");
   }
 
   const cached = streamUrlCache.get(videoId);
@@ -826,30 +804,15 @@ app.post("/api/stream/prefetch", async (request, response) => {
           : "not configured"
     }.`,
   );
-  try {
-    const { mimeType, expiresAt } = await resolveStreamUrl(videoId);
-    response.setHeader("Cache-Control", "no-store");
-    response.json({ status: "cached", videoId, mimeType, expiresAt });
-  } catch (error) {
-    console.error(
-      `[stream] Prefetch failed for ${videoId}: ${
-        error instanceof Error ? error.message : "unknown error"
-      }`,
-    );
-    response.status(getYtDlpFailureStatus(error)).json({
-      error:
-        error instanceof Error
-          ? error.message
-          : "Could not prefetch the audio stream.",
-    });
-  }
+  const { mimeType, expiresAt } = await resolveStreamUrl(videoId);
+  response.setHeader("Cache-Control", "no-store");
+  response.json({ status: "cached", videoId, mimeType, expiresAt });
 });
 
-app.get("/api/stream/:videoId", (request, response) => {
+app.get("/api/stream/:videoId", async (request, response) => {
   const { videoId } = request.params;
   if (!/^[\w-]{11}$/.test(videoId)) {
-    response.status(400).json({ error: "A valid YouTube video ID is required." });
-    return;
+    throw createAudioError("INVALID_REQUEST");
   }
 
   const cached = streamUrlCache.get(videoId);
@@ -866,105 +829,19 @@ app.get("/api/stream/:videoId", (request, response) => {
   );
   setStreamCorsHeaders(request, response);
   response.setHeader("Accept-Ranges", "bytes");
-  void proxyStreamRequest(request, response, videoId).catch((error) => {
-    console.error(
-      `[stream] Request failed for ${videoId}: ${
-        error instanceof Error ? error.message : "unknown error"
-      }`,
-    );
-    if (!response.headersSent && !response.destroyed) {
-      response.status(getYtDlpFailureStatus(error)).json({
-        error:
-          error instanceof Error
-            ? error.message
-            : "Could not start the audio stream.",
-      });
-    } else if (!response.destroyed) {
-      response.destroy(error instanceof Error ? error : new Error("Audio stream failed."));
-    }
-  });
+  await proxyStreamRequest(request, response, videoId);
 });
 
-async function runYtDlpWithClientFallback(videoId, outputTemplate) {
-  let lastError = null;
-  let formatFallbackUsed = false;
-  for (const client of PLAYER_CLIENTS) {
-    try {
-      const args = [
-        ...getYtDlpBaseArgs(),
-        ...getYtDlpCommonArgs(),
-        "--quiet",
-        "-f",
-        AUDIO_FIRST_FORMAT,
-        "--extract-audio",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        "0",
-        ...(client
-          ? ["--extractor-args", `youtube:player_client=${client}`]
-          : []),
-        "-o",
-        outputTemplate,
-        `https://www.youtube.com/watch?v=${videoId}`,
-      ];
-      const output = await runWithAudioFormatFallback(
-        args,
-        (attemptArgs, isFallback) =>
-          runYtDlp(
-            attemptArgs,
-            180_000,
-            isFallback ? "download-format-fallback" : "download",
-            YT_DLP_PRIORITY.download,
-          ),
-        () => {
-          formatFallbackUsed = true;
-          console.warn(
-            `[yt-dlp] download format unavailable for ${videoId}; retry=1/1; selector=${AUDIO_FALLBACK_FORMAT}; --no-check-formats enabled.`,
-          );
-        },
-      );
-      console.info(
-        `[yt-dlp] download selected audio; format=${
-          formatFallbackUsed ? AUDIO_FALLBACK_FORMAT : AUDIO_FIRST_FORMAT
-        }; extension=mp3; retry=${formatFallbackUsed ? "fallback" : "none"}.`,
-      );
-      return output;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (formatFallbackUsed) break;
-      if (
-        /sign in to confirm|not a bot|http error 403|status 429|too many requests/i.test(
-          lastError.message,
-        )
-      ) {
-        console.warn(
-          "[yt-dlp] Download bot-check/rate-limit response; stopping player-client retries.",
-        );
-        break;
-      }
-      if (
-        !/requested format|timed out/i.test(
-          lastError.message,
-        )
-      ) {
-        throw lastError;
-      }
-    }
-  }
-  throw lastError ?? new Error("yt-dlp could not create the MP3 download.");
-}
-
-function sanitizeDownloadFilename(title) {
-  const sanitized = String(title || "ALHAN DJ")
+function sanitizeDownloadFilename(title, videoId) {
+  const fallback = `alhan-${videoId}`;
+  const cleaned = String(title ?? "")
     .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-zA-Z0-9 _.-]+/g, "")
-    .replace(/[\\/:*?"<>|]+/g, "")
-    .replace(/\s+/g, " ")
-    .replace(/^[. ]+|[. ]+$/g, "")
-    .slice(0, 180);
-  return `${sanitized || "ALHAN DJ"}.mp3`;
+    .replace(/[^\w\s.-]+/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .slice(0, 120);
+  return `${cleaned || fallback}.mp3`;
 }
 
 function findCachedTrackTitle(videoId) {
@@ -975,92 +852,149 @@ function findCachedTrackTitle(videoId) {
   return null;
 }
 
-app.get("/api/download", (request, response) => {
+app.get("/api/download", (request, response, next) => {
   const videoId = String(request.query.id ?? "");
   if (!/^[\w-]{11}$/.test(videoId)) {
-    response.status(400).json({ error: "A valid YouTube video ID is required." });
+    next(createAudioError("INVALID_REQUEST"));
     return;
   }
 
+  const title = findCachedTrackTitle(videoId) ?? request.query.title;
+  const filename = sanitizeDownloadFilename(title, videoId);
   setStreamCorsHeaders(request, response);
+
   void (async () => {
-    let ffmpeg = null;
-    let cleaned = false;
+    let child;
+    let settled = false;
+    let stderr = "";
+
     const cleanup = () => {
-      if (cleaned) return;
-      cleaned = true;
-      if (ffmpeg && !ffmpeg.killed) ffmpeg.kill("SIGTERM");
+      response.removeListener("close", onResponseClose);
+      if (child && !child.killed && child.exitCode === null) {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // The process may already have exited.
+        }
+      }
     };
-    response.once("close", cleanup);
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const failure =
+        error instanceof Error ? error : new Error("MP3 download failed.");
+      failure.videoId = videoId;
+      failure.code = "DOWNLOAD_FAILED";
+      if (stderr) failure.stderr = stderr;
+      if (!response.headersSent) {
+        next(failure);
+      } else {
+        console.error("[download] Stream failed after headers were sent.", {
+          videoId,
+          error: failure,
+          stderr,
+        });
+        if (!response.destroyed) response.destroy(failure);
+      }
+    };
+
+    const onResponseClose = () => {
+      if (response.writableEnded) {
+        cleanup();
+        return;
+      }
+      settled = true;
+      cleanup();
+    };
+
+    response.once("close", onResponseClose);
 
     try {
-      const resolved = await resolveStreamUrl(videoId);
-      if (response.destroyed) return;
-      const title = findCachedTrackTitle(videoId) ?? `ALHAN ${videoId}`;
-      const filename = sanitizeDownloadFilename(title);
-      ffmpeg = spawn("ffmpeg", [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        resolved.streamUrl,
-        "-vn",
-        "-acodec",
-        "libmp3lame",
-        "-b:a",
-        "128k",
-        "-f",
-        "mp3",
-        "pipe:1",
-      ], { windowsHide: true });
+      const { streamUrl } = await resolveStreamUrl(videoId);
+      if (settled || response.destroyed) return;
 
-      let ffmpegError = "";
+      const ffmpegHeaders =
+        "Referer: https://www.youtube.com/\r\nAccept-Encoding: identity\r\n";
+      child = spawn(
+        process.env.FFMPEG_PATH?.trim() || "ffmpeg",
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-nostdin",
+          "-user_agent",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          "-headers",
+          ffmpegHeaders,
+          "-i",
+          streamUrl,
+          "-vn",
+          "-acodec",
+          "libmp3lame",
+          "-b:a",
+          "128k",
+          "-f",
+          "mp3",
+          "pipe:1",
+        ],
+        { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+      );
+
       const started = new Promise((resolve, reject) => {
-        ffmpeg.once("spawn", resolve);
-        ffmpeg.once("error", reject);
+        child.once("spawn", resolve);
+        child.once("error", reject);
       });
       const closed = new Promise((resolve) => {
-        ffmpeg.once("close", (code, signal) => resolve({ code, signal }));
+        child.once("close", (code, signal) => resolve({ code, signal }));
       });
-      ffmpeg.stderr?.on("data", (chunk) => {
-        ffmpegError = `${ffmpegError}${chunk.toString("utf8")}`.slice(-8000);
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+        if (stderr.length > 8_000) stderr = stderr.slice(-8_000);
       });
+
       await started;
+      if (settled || response.destroyed) return;
 
       response.status(200);
       response.setHeader("Content-Type", "audio/mpeg");
       response.setHeader("Cache-Control", "no-store");
-      response.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      response.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`,
+      );
       if (typeof response.flushHeaders === "function") response.flushHeaders();
 
       await new Promise((resolve, reject) => {
-        ffmpeg.stdout.once("end", resolve);
-        ffmpeg.stdout.once("error", reject);
-        ffmpeg.stdout.pipe(response, { end: false });
+        child.stdout.once("end", resolve);
+        child.stdout.once("error", reject);
+        child.stdout.pipe(response, { end: false });
       });
 
       const { code, signal } = await closed;
       if (response.destroyed) return;
       if (code !== 0) {
         throw new Error(
-          ffmpegError.trim() || `ffmpeg exited with status ${code ?? signal ?? "unknown"}.`,
+          stderr.trim() || `ffmpeg exited with status ${code ?? signal ?? "unknown"}.`,
         );
       }
+      settled = true;
+      cleanup();
       response.end();
     } catch (error) {
-      cleanup();
-      const detail = error instanceof Error ? error.message : "Could not create the MP3 download.";
-      console.error(`[download] Request failed for ${videoId}: ${detail}`);
-      if (!response.headersSent) {
-        response.status(502).json({ error: detail });
-      } else if (!response.destroyed) {
-        response.destroy(error instanceof Error ? error : new Error(detail));
-      }
+      fail(error);
+    } finally {
+      if (response.writableEnded || response.destroyed) cleanup();
     }
   })();
 });
 
 registerAiDjRoutes(app);
+app.use("/api", (_request, _response, next) => {
+  next(createAudioError("INVALID_REQUEST"));
+});
+app.use(audioErrorMiddleware);
 
 void ensureCookiesFile()
   .catch((error) => {

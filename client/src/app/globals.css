@@ -2036,7 +2036,8 @@ button:focus-visible, input:focus-visible { outline: 1px solid var(--cyan); outl
 .ai-voice-mark.listening { border-color: rgba(220, 61, 255, .7); color: #ffe2ff; background: rgba(169, 40, 255, .18); box-shadow: 0 0 16px rgba(191, 44, 255, .24); animation: ai-listening-pulse 1.25s ease-in-out infinite alternate; }
 .ai-voice-control > span { min-width: 0; color: #9aa8b8; font-size: 8px; line-height: 1.45; }
 .ai-voice-toggle { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 10px; border: 1px solid rgba(50, 214, 203, .34); border-radius: 5px; color: #b7c8ce; background: rgba(50, 214, 203, .07); font: inherit; font-size: 8px; font-weight: 800; white-space: nowrap; cursor: pointer; }
-.ai-voice-toggle[aria-pressed="true"] { border-color: rgba(50, 214, 203, .72); color: #d8fffb; background: rgba(50, 214, 203, .16); }
+.ai-voice-toggle:hover:not(:disabled) { border-color: rgba(50, 214, 203, .45); color: #bafaf4; }
+.ai-voice-toggle.on, .ai-voice-toggle[aria-pressed="true"] { border-color: rgba(50, 214, 203, .72); color: #d8fffb; background: rgba(50, 214, 203, .16); }
 .ai-voice-toggle:disabled { opacity: .5; cursor: not-allowed; }
 @keyframes ai-listening-pulse { to { box-shadow: 0 0 22px rgba(191, 44, 255, .48); } }
 .ai-chips { display: flex; flex-wrap: wrap; gap: 6px; }
