@@ -17,7 +17,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   isAiStage,
   STAGE_LABELS,
@@ -30,34 +30,12 @@ import type { TrackResult } from "../lib/tracks";
 import TrackArtwork from "./TrackArtwork";
 import type { TasteProfile } from "../utils/tasteProfile";
 import { fetchApi, readApiJson } from "../lib/api";
+import { useAlhanVoiceAssistant } from "../hooks/useAlhanVoiceAssistant";
 
 type DeckSlot = "A" | "B";
 type AiMode = "dj" | "music";
 
 const MAX_SETLIST_TRACKS = 24;
-
-type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & {
-  isFinal?: boolean;
-};
-
-type SpeechRecognitionLike = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  onresult: ((event: { results: ArrayLike<SpeechRecognitionResult> }) => void) | null;
-  onstart: (() => void) | null;
-  onerror: ((event: { error: string }) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-
-type SpeechRecognitionWindow = Window & {
-  SpeechRecognition?: SpeechRecognitionConstructor;
-  webkitSpeechRecognition?: SpeechRecognitionConstructor;
-};
 
 const stageIcon = (stage: string) => {
   if (!isAiStage(stage)) return <Zap size={11} />;
@@ -81,11 +59,14 @@ export default function AiDjPanel({
   onClose,
   onLoadTrack,
   onPlayIn8D,
+  onPlayVoiceTrack,
   onRunSet,
   aiQueue,
   aiQueueIndex,
   onStopSet,
   tasteProfile,
+  onVoiceVolumeDuck,
+  onVoiceVolumeRestore,
 }: {
   open: boolean;
   mode: AiMode;
@@ -100,11 +81,14 @@ export default function AiDjPanel({
     fx: DeckFx,
   ) => Promise<boolean>;
   onPlayIn8D: (track: TrackResult, fx: DeckFx) => Promise<boolean>;
+  onPlayVoiceTrack: (track: TrackResult) => Promise<boolean>;
   onRunSet: (items: AiSetQueueItem[]) => void;
   aiQueue: AiSetQueueItem[];
   aiQueueIndex: number;
   onStopSet: () => void;
   tasteProfile: TasteProfile | null;
+  onVoiceVolumeDuck: () => void;
+  onVoiceVolumeRestore: () => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [setlist, setSetlist] = useState<string[]>([]);
@@ -119,48 +103,15 @@ export default function AiDjPanel({
   const [resolvedSteps, setResolvedSteps] = useState<Array<TrackResult | null>>(
     [],
   );
-  const [listening, setListening] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("");
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const recognitionConstructorRef = useRef<SpeechRecognitionConstructor | null>(null);
-  const restartRecognitionRef = useRef<(() => void) | null>(null);
-  const listenerEnabledRef = useRef(false);
-  const awaitingSongRef = useRef(false);
-  const speechPausedRef = useRef(false);
+  const [voiceWakeEnabled, setVoiceWakeEnabled] = useState(false);
   const busyRef = useRef(false);
-  const runRequestRef = useRef<((options?: {
-    workflow?: "vibe" | "setlist";
-    message?: string;
-    autoPlay?: boolean;
-  }) => Promise<void>) | null>(null);
-  const speakAsAlhanRef = useRef<(message: string) => void>(() => {});
-
-  useEffect(
-    () => () => {
-      listenerEnabledRef.current = false;
-      recognitionRef.current?.stop();
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-    },
-    [],
-  );
 
   const speakAsAlhan = (message: string) => {
     if (!("speechSynthesis" in window)) return;
-    speechPausedRef.current = true;
-    recognitionRef.current?.stop();
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(message);
     utterance.lang = navigator.language || "en-US";
-    const resumeListening = () => {
-      speechPausedRef.current = false;
-      if (listenerEnabledRef.current && !busyRef.current) {
-        window.setTimeout(() => restartRecognitionRef.current?.(), 350);
-      } else {
-        setListening(false);
-      }
-    };
-    utterance.onend = resumeListening;
-    utterance.onerror = resumeListening;
     window.speechSynthesis.speak(utterance);
   };
 
@@ -382,152 +333,17 @@ export default function AiDjPanel({
     } finally {
       busyRef.current = false;
       setBusy(false);
-      if (!listenerEnabledRef.current) setListening(false);
-      if (listenerEnabledRef.current && !speechPausedRef.current) {
-        window.setTimeout(() => restartRecognitionRef.current?.(), 350);
-      }
     }
   };
 
-  useEffect(() => {
-    runRequestRef.current = runRequest;
-    speakAsAlhanRef.current = speakAsAlhan;
+  const wakeAssistant = useAlhanVoiceAssistant({
+    enabled: open && activated && voiceWakeEnabled,
+    searchTracks,
+    onPlayTrack: onPlayVoiceTrack,
+    onVolumeDuck: onVoiceVolumeDuck,
+    onVolumeRestore: onVoiceVolumeRestore,
   });
-
-  const startListening = useCallback(() => {
-    const Recognition = recognitionConstructorRef.current;
-    if (
-      !Recognition ||
-      !listenerEnabledRef.current ||
-      busyRef.current ||
-      speechPausedRef.current ||
-      recognitionRef.current
-    ) {
-      return;
-    }
-
-    const recognition = new Recognition();
-    recognition.lang = navigator.language || "en-US";
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.onstart = () => {
-      setListening(true);
-      setVoiceStatus('Listening for “Alhan”…');
-    };
-    recognition.onresult = (event) => {
-      const result = event.results[event.results.length - 1];
-      if (!result?.isFinal && result?.isFinal !== undefined) return;
-      const transcript = result?.[0]?.transcript.trim();
-      if (!transcript) return;
-
-      const wakeWord = /\b(?:alhan|alham)\b/i;
-      const hasWakeWord = wakeWord.test(transcript);
-      const request = hasWakeWord
-        ? transcript
-            .replace(wakeWord, " ")
-            .replace(/^[\s,.:;-]+|[\s,.:;!?-]+$/g, "")
-            .trim()
-        : awaitingSongRef.current
-          ? transcript
-          : "";
-
-      if (hasWakeWord && !request) {
-        awaitingSongRef.current = true;
-        setVoiceStatus("ALHAN heard you. Listening for your song request…");
-        recognition.stop();
-        speakAsAlhanRef.current("Yes, how can I help?");
-        return;
-      }
-
-      if (!request) {
-        setVoiceStatus('Listening for “Alhan”…');
-        return;
-      }
-
-      awaitingSongRef.current = false;
-      setPrompt(request);
-      setVoiceStatus(`Okay. Searching for “${request}”…`);
-      recognition.stop();
-      speakAsAlhanRef.current("Okay, searching now.");
-      void runRequestRef.current?.({
-        workflow: "vibe",
-        message: request,
-        autoPlay: true,
-      });
-    };
-    recognition.onerror = (event) => {
-      if (event.error === "no-speech" || event.error === "aborted") return;
-      const needsPermission = event.error === "not-allowed" || event.error === "service-not-allowed";
-      const missingMicrophone = event.error === "audio-capture";
-      const message =
-        needsPermission
-          ? "Microphone access was denied. Allow it for this site, then reload the app."
-          : missingMicrophone
-            ? "No microphone was detected. Connect a microphone and try again."
-            : `Voice recognition was interrupted${event.error ? ` (${event.error})` : ""}. Restarting…`;
-      if (needsPermission || missingMicrophone) {
-        listenerEnabledRef.current = false;
-      }
-      setError(message);
-      setVoiceStatus(message);
-      if (needsPermission || missingMicrophone) setListening(false);
-    };
-    recognition.onend = () => {
-      if (recognitionRef.current === recognition) recognitionRef.current = null;
-      if (!listenerEnabledRef.current) {
-        setListening(false);
-        return;
-      }
-      if (
-        !speechPausedRef.current &&
-        !busyRef.current
-      ) {
-        window.setTimeout(() => restartRecognitionRef.current?.(), 350);
-      }
-    };
-
-    recognitionRef.current = recognition;
-    try {
-      recognition.start();
-    } catch (reason) {
-      recognitionRef.current = null;
-      listenerEnabledRef.current = false;
-      setListening(false);
-      const message =
-        reason instanceof Error ? reason.message : "Could not start voice input.";
-      setError(message);
-      setVoiceStatus(message);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!activated) {
-      listenerEnabledRef.current = false;
-      recognitionRef.current?.stop();
-      recognitionRef.current = null;
-      setListening(false);
-      setVoiceStatus("Activate ALHAN Bot to enable voice listening.");
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      const speechWindow = window as SpeechRecognitionWindow;
-      const Recognition =
-        speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
-      if (!Recognition) {
-        setError("Voice input isn't supported in this browser. Try a current version of Chrome or Edge.");
-        setVoiceStatus("Voice input isn't supported in this browser.");
-        return;
-      }
-
-      recognitionConstructorRef.current = Recognition;
-      listenerEnabledRef.current = true;
-      setError("");
-      setVoiceStatus('Starting wake-word listening for “Alhan”…');
-      restartRecognitionRef.current = startListening;
-      startListening();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [activated, startListening]);
+  const voiceWakeActive = open && activated && voiceWakeEnabled;
 
   const retryStep = async (index: number, step: AiSetStep) => {
     try {
@@ -700,12 +516,25 @@ export default function AiDjPanel({
           </label>
 
           <div className="ai-voice-control">
-            <span className={`ai-voice-mark ${listening ? "listening" : ""}`}>
+            <span className={`ai-voice-mark ${wakeAssistant.listening ? "listening" : ""}`}>
               <Mic size={14} />
             </span>
             <span aria-live="polite">
-              {voiceStatus || "Say “Alhan” followed by a song request."}
+              {voiceWakeActive
+                ? wakeAssistant.status
+                : wakeAssistant.supported
+                  ? voiceStatus || "Voice wake is off."
+                  : wakeAssistant.status}
             </span>
+            <button
+              type="button"
+              className="ai-voice-toggle"
+              disabled={!wakeAssistant.supported || !activated}
+              onClick={() => setVoiceWakeEnabled((enabled) => !enabled)}
+              aria-pressed={voiceWakeActive}
+            >
+              <Mic size={12} /> Voice Wake: {voiceWakeActive ? "ON" : "OFF"}
+            </button>
           </div>
 
           <div className="ai-chips">

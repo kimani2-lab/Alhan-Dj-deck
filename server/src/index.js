@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync } from "node:fs";
-import { mkdtemp, readdir, rm, writeFile, chmod, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { writeFile, chmod, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import os from "node:os";
@@ -955,6 +955,26 @@ async function runYtDlpWithClientFallback(videoId, outputTemplate) {
   throw lastError ?? new Error("yt-dlp could not create the MP3 download.");
 }
 
+function sanitizeDownloadFilename(title) {
+  const sanitized = String(title || "ALHAN DJ")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9 _.-]+/g, "")
+    .replace(/[\\/:*?"<>|]+/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[. ]+|[. ]+$/g, "")
+    .slice(0, 180);
+  return `${sanitized || "ALHAN DJ"}.mp3`;
+}
+
+function findCachedTrackTitle(videoId) {
+  for (const entry of searchCache.values()) {
+    const track = entry?.value?.find((item) => item.id === videoId);
+    if (track?.title) return track.title;
+  }
+  return null;
+}
+
 app.get("/api/download", (request, response) => {
   const videoId = String(request.query.id ?? "");
   if (!/^[\w-]{11}$/.test(videoId)) {
@@ -964,46 +984,77 @@ app.get("/api/download", (request, response) => {
 
   setStreamCorsHeaders(request, response);
   void (async () => {
-    let tempDirectory = "";
+    let ffmpeg = null;
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (ffmpeg && !ffmpeg.killed) ffmpeg.kill("SIGTERM");
+    };
+    response.once("close", cleanup);
+
     try {
-      tempDirectory = await mkdtemp(path.join(os.tmpdir(), "alhan-dj-"));
-      const outputTemplate = path.join(tempDirectory, "%(id)s.%(ext)s");
-      const output = await runYtDlpWithClientFallback(videoId, outputTemplate);
-      void output;
+      const resolved = await resolveStreamUrl(videoId);
+      if (response.destroyed) return;
+      const title = findCachedTrackTitle(videoId) ?? `ALHAN ${videoId}`;
+      const filename = sanitizeDownloadFilename(title);
+      ffmpeg = spawn("ffmpeg", [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        resolved.streamUrl,
+        "-vn",
+        "-acodec",
+        "libmp3lame",
+        "-b:a",
+        "128k",
+        "-f",
+        "mp3",
+        "pipe:1",
+      ], { windowsHide: true });
 
-      const files = await readdir(tempDirectory);
-      const mp3File = files.find((file) => file.toLowerCase().endsWith(".mp3"));
-      if (!mp3File) {
-        throw new Error("yt-dlp did not create an MP3 file.");
-      }
+      let ffmpegError = "";
+      const started = new Promise((resolve, reject) => {
+        ffmpeg.once("spawn", resolve);
+        ffmpeg.once("error", reject);
+      });
+      const closed = new Promise((resolve) => {
+        ffmpeg.once("close", (code, signal) => resolve({ code, signal }));
+      });
+      ffmpeg.stderr?.on("data", (chunk) => {
+        ffmpegError = `${ffmpegError}${chunk.toString("utf8")}`.slice(-8000);
+      });
+      await started;
 
-      const filePath = path.join(tempDirectory, mp3File);
+      response.status(200);
       response.setHeader("Content-Type", "audio/mpeg");
       response.setHeader("Cache-Control", "no-store");
-      response.setHeader(
-        "Content-Disposition",
-        `attachment; filename="alhan-${videoId}.mp3"`,
-      );
+      response.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      if (typeof response.flushHeaders === "function") response.flushHeaders();
 
-      let cleaned = false;
-      const cleanup = () => {
-        if (cleaned) return;
-        cleaned = true;
-        void rm(tempDirectory, { recursive: true, force: true });
-      };
-      response.once("finish", cleanup);
-      response.once("close", cleanup);
-      createReadStream(filePath).pipe(response);
-    } catch (error) {
-      if (tempDirectory) {
-        await rm(tempDirectory, { recursive: true, force: true });
+      await new Promise((resolve, reject) => {
+        ffmpeg.stdout.once("end", resolve);
+        ffmpeg.stdout.once("error", reject);
+        ffmpeg.stdout.pipe(response, { end: false });
+      });
+
+      const { code, signal } = await closed;
+      if (response.destroyed) return;
+      if (code !== 0) {
+        throw new Error(
+          ffmpegError.trim() || `ffmpeg exited with status ${code ?? signal ?? "unknown"}.`,
+        );
       }
+      response.end();
+    } catch (error) {
+      cleanup();
+      const detail = error instanceof Error ? error.message : "Could not create the MP3 download.";
+      console.error(`[download] Request failed for ${videoId}: ${detail}`);
       if (!response.headersSent) {
-        response.status(getYtDlpFailureStatus(error)).json({
-          error: error instanceof Error ? error.message : "Could not create the MP3 download.",
-        });
-      } else {
-        response.destroy(error instanceof Error ? error : new Error("MP3 download failed."));
+        response.status(502).json({ error: detail });
+      } else if (!response.destroyed) {
+        response.destroy(error instanceof Error ? error : new Error(detail));
       }
     }
   })();
