@@ -9,17 +9,18 @@ RUN apt-get update \
         python3-pip \
         unzip \
     && python3 -m pip install --no-cache-dir --break-system-packages --upgrade \
-        --prefix /usr/local "yt-dlp[default]" \
-    && curl -L --fail --retry 3 \
+        "yt-dlp[default]" \
+    && test -x /usr/local/bin/yt-dlp \
+    && /usr/local/bin/yt-dlp --version \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -L --fail --retry 3 \
         https://deno.land/install.sh \
         -o /tmp/install-deno.sh \
     && DENO_INSTALL=/usr/local sh /tmp/install-deno.sh \
     && rm /tmp/install-deno.sh \
-    && command -v yt-dlp \
-    && yt-dlp --version \
-    && command -v deno \
-    && deno --version \
-    && rm -rf /var/lib/apt/lists/*
+    && test -x /usr/local/bin/deno \
+    && /usr/local/bin/deno --version
 
 WORKDIR /app
 COPY package*.json ./
